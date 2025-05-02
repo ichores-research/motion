@@ -1,4 +1,4 @@
-FROM registry.gitlab.com/pal-robotics/tg010123/dockers/pal-gallium-pal-metapkg-development-tiago-218-dev:latest
+FROM ros:noetic
 ENTRYPOINT [ ]
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -6,9 +6,8 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ros-noetic-moveit
 
 SHELL ["/bin/bash", "-c"]
-RUN source /opt/pal/gallium/setup.bash
-RUN echo "source /opt/pal/gallium/setup.bash" >> ~/.bashrc
-RUN source ~/.bashrc
+RUN source /opt/ros/noetic/setup.bash
+RUN echo "source /opt/ros/noetic/setup.bash" >> ~/.bashrc
 
 WORKDIR /root
 
