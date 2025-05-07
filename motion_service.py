@@ -1,5 +1,6 @@
 # ROS Service for motion planning
 # Exposes a simple API for motion templates such as "pick", "place", "move", etc.
+import argparse
 import rospy
 import moveit_commander
 from motion_msgs.srv import Prepare, PrepareResponse
@@ -103,5 +104,14 @@ class MotionService:
 
 
 if __name__ == "__main__":
-    motion_service = MotionService()
+    parser = argparse.ArgumentParser(description="Motion Service")
+    parser.add_argument(
+        "--group-name",
+        type=str,
+        default="arm_torso",
+        help="MoveIt group name to use for motion planning.",
+    )
+    args = parser.parse_args()
+
+    motion_service = MotionService(group_name=args.group_name)
     rospy.spin()
