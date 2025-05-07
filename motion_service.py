@@ -1,31 +1,69 @@
 # ROS Service for motion planning
 # Exposes a simple API for motion templates such as "pick", "place", "move", etc.
-import time
 import rospy
 import moveit_commander
+from motion_msgs.srv import Prepare, PrepareResponse
 
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 
-class MotionService:
-    def __init__(self):
-        rospy.loginfo("Initializing Motion Service...")
+DEFAULT_POSE_JOINT_POSITIONS = [
+    0.34, # torso_lift_joint
+    0.10, # arm_1_joint
+    0.47, # arm_2_joint
+    -0.20, # arm_3_joint
+    1.56, # arm_4_joint
+    1.60, # arm_5_joint
+    0.25, # arm_6_joint
+    1.19 # arm_7_joint
+]
 
-        rospy.loginfo("Setting publishers to torso and head controller...")
-        self.torso_cmd = rospy.Publisher(
-            "/torso_controller/command", JointTrajectory, queue_size=1
-        )
+DEFAULT_HEAD_JOINT_POSITIONS = [
+    0.0, # head_1_joint
+    -0.75 # head_2_joint
+]
+
+
+class MotionService:
+    def __init__(self, group_name="arm_torso"):
+        rospy.loginfo("Initializing Motion Service...")
+        rospy.init_node("motion_service_node")
+
+        # Setup head controller
         self.head_cmd = rospy.Publisher(
             "/head_controller/command", JointTrajectory, queue_size=1
         )
-        self.arm_cmd = rospy.Publisher(
-            "/arm_controller/command", JointTrajectory, queue_size=1
-        )
-        self.gripper_cmd = rospy.Publisher(
-            "/gripper_controller/command", JointTrajectory, queue_size=1
+
+        # Setup MoveIt
+        self.robot = moveit_commander.RobotCommander()
+        self.scene = moveit_commander.PlanningSceneInterface()
+        self.move_group = moveit_commander.MoveGroupCommander(group_name)
+
+        # Change end effector link
+        self.move_group.set_end_effector_link("gripper_link")
+        # self.move_group.allow_replanning(True)
+        # self.move_group.set_planning_time(30)
+        # self.move_group.set_num_planning_attempts(3)
+
+        # Setup service
+        self.prepare_service = rospy.Service(
+            "/motion/prepare", Prepare, self.prepare_robot
         )
 
         rospy.loginfo("Done initializing Motion Service.")
+
+
+    def _move_to_joint_positions(self, joint_positions):
+        """
+        Moves the robot to the specified joint positions.
+
+        :param joint_names: List of joint names.
+        :param joint_positions: List of joint position values.
+        """
+        rospy.loginfo("Moving to joint positions...")
+        self.move_group.set_joint_value_target(joint_positions)
+        self.move_group.go(wait=True)
+        self.move_group.stop()
 
     def lower_head(self):
         """
@@ -33,86 +71,37 @@ class MotionService:
         """
         rospy.loginfo("Moving head down")
         jt = JointTrajectory()
-        jt.joint_names = ["head_1_joint", "head_2_joint"]
+        jt.joint_names = [
+            "head_1_joint",
+            "head_2_joint",
+        ]
         jtp = JointTrajectoryPoint()
-        jtp.positions = [0.0, -0.75]
+        jtp.positions = DEFAULT_HEAD_JOINT_POSITIONS
         jtp.time_from_start = rospy.Duration(2.0)
         jt.points.append(jtp)
         self.head_cmd.publish(jt)
         rospy.loginfo("Done.")
 
-    def move_to_positions(self, joint_names, positions_list, time_durations, publisher):
-        """
-        Moves the robot to the specified positions.
 
-        :param joint_names: List of joint names.
-        :param positions_list: List of joint position configurations.
-        :param time_durations: List of time durations for each configuration.
-        :param publisher: The ROS publisher to send the trajectory to.
-        """
-        rospy.loginfo("Moving to specified positions...")
-        if len(positions_list) != len(time_durations):
-            rospy.logerr("Mismatch between positions and time durations.")
-            return
-
-        jt = JointTrajectory()
-        jt.joint_names = joint_names
-
-        for positions, duration in zip(positions_list, time_durations):
-            jtp = JointTrajectoryPoint()
-            jtp.positions = positions
-            jtp.time_from_start = rospy.Duration(duration)
-            jt.points.append(jtp)
-
-        publisher.publish(jt)
-        rospy.loginfo("Trajectory published to %s", publisher.name)
-
-    def prepare_robot(self):
+    def prepare_robot(self, req):
         """
         Prepares the robot for operation by moving the torso and arm to a safe position.
         """
         rospy.loginfo("Unfolding arm safely")
-
-        # Move torso first
-        torso_joint_names = ["torso_lift_joint"]
-        torso_positions_list = [[0.34]]  # Only one position for the torso
-        torso_time_durations = [3.0]
-        self.move_to_positions(
-            torso_joint_names,
-            torso_positions_list,
-            torso_time_durations,
-            self.torso_cmd,
-        )
-
-        # Move arm joints
-        arm_joint_names = [
-            "arm_1_joint",
-            "arm_2_joint",
-            "arm_3_joint",
-            "arm_4_joint",
-            "arm_5_joint",
-            "arm_6_joint",
-            "arm_7_joint",
-        ]
-        arm_positions_list = [
-            [0.20, -1.34, -0.20, 1.94, -1.57, 1.37, 0.0],
-            [0.10, 0.47, -0.20, 1.56, -1.58, 0.25, 0.0],
-            [0.10, 0.47, -0.20, 1.56, 1.60, 0.25, 1.19],
-        ]
-        arm_time_durations = [3.0, 8.5, 10.5]
-        self.move_to_positions(
-            arm_joint_names, arm_positions_list, arm_time_durations, self.arm_cmd
-        )
-
+        # Move the torso to a safe position
+        self._move_to_joint_positions(DEFAULT_POSE_JOINT_POSITIONS)
+        
         # Lower the head
         self.lower_head()
         rospy.loginfo("Robot prepared.")
+
+        return PrepareResponse()
 
     # def pick(self, item_id, target_pose):
     #     pass
 
 
+
 if __name__ == "__main__":
-    rospy.init_node("motion_service_node")
     motion_service = MotionService()
     rospy.spin()
