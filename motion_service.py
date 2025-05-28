@@ -8,16 +8,28 @@ from motion_msgs.srv import Prepare, PrepareResponse
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 
-DEFAULT_POSE_JOINT_POSITIONS = [
-    0.34, # torso_lift_joint
-    0.10, # arm_1_joint
-    0.47, # arm_2_joint
-    -0.20, # arm_3_joint
-    1.56, # arm_4_joint
-    1.60, # arm_5_joint
-    0.25, # arm_6_joint
-    1.19 # arm_7_joint
-]
+DEFAULT_POSE_JOINT_POSITIONS = {
+    "arm_torso": [
+        0.34, # torso_lift_joint
+        0.10, # arm_1_joint
+        0.47, # arm_2_joint
+        -0.20, # arm_3_joint
+        1.56, # arm_4_joint
+        1.60, # arm_5_joint
+        0.25, # arm_6_joint
+        1.19 # arm_7_joint
+    ],
+"arm_right_torso": [
+        0.34, # torso_lift_joint
+        -0.48, # arm_1_joint
+        -0.25, # arm_2_joint
+        1.84, # arm_3_joint
+        1.76, # arm_4_joint
+        1.60, # arm_5_joint
+        -0.50, # arm_6_joint
+        1.19 # arm_7_joint
+    ]
+}
 
 DEFAULT_HEAD_JOINT_POSITIONS = [
     0.0, # head_1_joint
@@ -27,6 +39,7 @@ DEFAULT_HEAD_JOINT_POSITIONS = [
 
 class MotionService:
     def __init__(self, group_name="arm_torso"):
+        self.group_name = group_name
         rospy.loginfo("Initializing Motion Service...")
         rospy.init_node("motion_service_node")
 
@@ -90,7 +103,8 @@ class MotionService:
         """
         rospy.loginfo("Unfolding arm safely")
         # Move the torso to a safe position
-        self._move_to_joint_positions(DEFAULT_POSE_JOINT_POSITIONS)
+        joint_positions = DEFAULT_POSE_JOINT_POSITIONS[self.group_name]
+        self._move_to_joint_positions(joint_positions)
         
         # Lower the head
         self.lower_head()
