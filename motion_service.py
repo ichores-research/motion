@@ -3,7 +3,7 @@
 import argparse
 import rospy
 import moveit_commander
-from motion_msgs.srv import Prepare, PrepareResponse
+from motion_msgs.srv import Prepare, PrepareRequest, PrepareResponse, Pick, PickRequest, PickResponse
 
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
@@ -64,6 +64,10 @@ class MotionService:
             "/motion/prepare", Prepare, self.prepare_robot
         )
 
+        self.pick_service = rospy.Service(
+            "/motion/pick", Pick, self.pick
+        )
+
         rospy.loginfo("Done initializing Motion Service.")
 
 
@@ -97,7 +101,7 @@ class MotionService:
         rospy.loginfo("Done.")
 
 
-    def prepare_robot(self, req):
+    def prepare_robot(self, req: PrepareRequest):
         """
         Prepares the robot for operation by moving the torso and arm to a safe position.
         """
@@ -112,8 +116,9 @@ class MotionService:
 
         return PrepareResponse()
 
-    # def pick(self, item_id, target_pose):
-    #     pass
+    def pick(self, req: PickRequest):
+        return PickResponse(success=True)
+        
 
 
 

@@ -5,7 +5,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt update \
  && apt install -y --no-install-recommends ros-noetic-moveit 
 
-RUN apt install -y python3-catkin-tools git
+RUN apt install -y python3-catkin-tools git python3-pip
+
+RUN pip install -U numpy open3d
 
 SHELL ["/bin/bash", "-c"]
 RUN echo "source /opt/ros/noetic/setup.bash" >> ~/.bashrc
