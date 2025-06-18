@@ -10,8 +10,6 @@ import moveit_msgs
 import trajectory_msgs
 from geometry_msgs.msg import Point, Quaternion, Pose, PoseStamped
 from visualization_msgs.msg import Marker, MarkerArray
-import tf2_ros
-import tf2_geometry_msgs
 
 DEFAULT_POSE_JOINT_POSITIONS = {
     "arm_torso": [
@@ -76,11 +74,8 @@ class MotionService:
         self.marker_publisher = rospy.Publisher(
             "/motion/grasp_markers",
             MarkerArray,
-            queue_size=1
+            latch=True
         )
-
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
 
         # Dummy table
@@ -241,35 +236,7 @@ class MotionService:
             marker_x.color.r = 1.0
             marker_x.color.a = 1.0
             
-            # Arrow for Y axis (rotated 90 degrees around Z)
-            marker_y = Marker()
-            marker_y.header = grasp.grasp_pose.header
-            marker_y.ns = f"grasp_{idx}"
-            marker_y.id = idx * 3 + 1
-            marker_y.type = Marker.ARROW
-            marker_y.action = Marker.ADD
-            marker_y.pose = grasp.grasp_pose.pose
-            # Rotate the Y arrow 90 degrees around Z
-            marker_y.pose.orientation = Quaternion(0, 0, 0.707, 0.707)
-            marker_y.scale = marker_x.scale
-            marker_y.color.g = 1.0
-            marker_y.color.a = 1.0
-            
-            # Arrow for Z axis (rotated -90 degrees around Y)
-            marker_z = Marker()
-            marker_z.header = grasp.grasp_pose.header
-            marker_z.ns = f"grasp_{idx}"
-            marker_z.id = idx * 3 + 2
-            marker_z.type = Marker.ARROW
-            marker_z.action = Marker.ADD
-            marker_z.pose = grasp.grasp_pose.pose
-            # Rotate the Z arrow -90 degrees around Y
-            marker_z.pose.orientation = Quaternion(0.707, 0, 0, 0.707)
-            marker_z.scale = marker_x.scale
-            marker_z.color.b = 1.0
-            marker_z.color.a = 1.0
-            
-            marker_array.markers.extend([marker_x, marker_y, marker_z])
+            marker_array.markers.append(marker_x)
         
         self.marker_publisher.publish(marker_array)
 

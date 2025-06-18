@@ -8,14 +8,13 @@ import open3d as o3d
 from shape_msgs.msg import Mesh, MeshTriangle
 import tf.transformations as tft
 
-def ply_to_shape_mesh(ply_path):
+def o3d_to_shape_mesh(model):
     # Read PLY file using Open3D
-    mesh = o3d.io.read_triangle_mesh(ply_path)
     mesh_msg = Mesh()
 
     # Convert vertices
-    vertices = np.asarray(mesh.vertices)
-    triangles = np.asarray(mesh.triangles)
+    vertices = np.asarray(model.vertices)
+    triangles = np.asarray(model.triangles)
 
     # Add vertices
     for vertex in vertices:
@@ -35,26 +34,51 @@ def ply_to_shape_mesh(ply_path):
 
     return mesh_msg
 
-def npy_to_pose_array(npy_path):
-    # Load numpy array from file
-    poses = np.load(npy_path, allow_pickle=True)
 
+def transform_grasp_obj2world(grasps, pose):
+    transformed_grasps = []
+
+    # Convert object quaternion to a 4x4 transformation matrix, then extract the 3x3 rotation matrix
+    obj_quat = [pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w]
+    obj_transform = tft.quaternion_matrix(obj_quat)  # This gives a 4x4 matrix
+    obj_R = obj_transform[:3, :3]  # Extract the 3x3 rotation part
+    obj_t = np.array([pose.position.x, pose.position.y, pose.position.z])  # Translation vector
+
+    for grasp in grasps:
+        # Convert the grasp to a 4x4 matrix
+        grasp_matrix = np.array(grasp).reshape(4, 4)
+
+        # Apply rotation and translation to transform the grasp to world coordinates
+        transformed_grasp_matrix = np.eye(4)
+        transformed_grasp_matrix[:3, :3] = np.dot(obj_R, grasp_matrix[:3, :3])  # Rotate
+        transformed_grasp_matrix[:3, 3] = np.dot(obj_R, grasp_matrix[:3, 3]) + obj_t  # Rotate and translate
+
+        # Flatten the transformed matrix and store it
+        transformed_grasps.append(transformed_grasp_matrix.flatten())
+
+    return np.array(transformed_grasps)
+
+
+def ndarray_to_pose_array(poses):
     pose_array = PoseArray()
+    align_x_to_z = tft.quaternion_from_euler(0, np.pi / 2, 0)
     for pose in poses:
         matrix = pose.reshape(4,4)
         translation = matrix[:3, 3]
         orientation = tft.quaternion_from_matrix(matrix)
+        adjusted_orientation = tft.quaternion_multiply(orientation, align_x_to_z)
 
         p = Pose()
         p.position.x = float(translation[0])
         p.position.y = float(translation[1])
         p.position.z = float(translation[2])
-        p.orientation.x = float(orientation[0])
-        p.orientation.y = float(orientation[1])
-        p.orientation.z = float(orientation[2])
-        p.orientation.w = float(orientation[3])
+        p.orientation.x = float(adjusted_orientation[0])
+        p.orientation.y = float(adjusted_orientation[1])
+        p.orientation.z = float(adjusted_orientation[2])
+        p.orientation.w = float(adjusted_orientation[3])
         pose_array.poses.append(p)
     return pose_array
+
 
 
 def test_pick():
@@ -73,16 +97,6 @@ def test_pick():
         return
     
     try:
-        # Prepare geometry_msgs.Mesh with object mesh from  STL file
-        # and geometry_msgs.PoseArray with grasps from numpy file
-        mesh_path = "data/obj_000010.ply"
-        mesh_msg = ply_to_shape_mesh(mesh_path)
-        print(f"Mesh vertices count: {len(mesh_msg.vertices)}")
-
-        npy_path = "data/obj_000010.npy"
-        pose_array = npy_to_pose_array(npy_path)
-        print(f"PoseArray poses count: {len(pose_array.poses)}")
-
         # Invent some Pose
         pose = Pose()
         pose.position.x = 0.5
@@ -92,6 +106,19 @@ def test_pick():
         pose.orientation.y = 0.0
         pose.orientation.z = 0.0
         pose.orientation.w = 1.0
+        
+        # Prepare geometry_msgs.Mesh with object mesh from  STL file
+        # and geometry_msgs.PoseArray with grasps from numpy file
+        model_path = "data/obj_000010.ply"
+        model = o3d.io.read_triangle_mesh(model_path)
+        mesh_msg = o3d_to_shape_mesh(model)
+        print(f"Mesh vertices count: {len(mesh_msg.vertices)}")
+
+        npy_path = "data/obj_000010.npy"
+        grasps = np.load(npy_path, allow_pickle=True)
+        grasps_transformed = transform_grasp_obj2world(grasps, pose)
+        pose_array = ndarray_to_pose_array(grasps_transformed)
+        print(f"Grasps count: {len(pose_array.poses)}")
 
         # Create Pick message
         pick_req = PickRequest()
@@ -99,7 +126,6 @@ def test_pick():
         pick_req.object_pose = pose
         pick_req.grasps = pose_array
         
-        print(pick_req)
 
         # Call the pick service
         response = pick_service(pick_req)
