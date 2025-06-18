@@ -6,6 +6,7 @@ from shape_msgs.msg import Mesh
 
 import open3d as o3d
 from shape_msgs.msg import Mesh, MeshTriangle
+import tf.transformations as tft
 
 def ply_to_shape_mesh(ply_path):
     # Read PLY file using Open3D
@@ -19,9 +20,9 @@ def ply_to_shape_mesh(ply_path):
     # Add vertices
     for vertex in vertices:
         point = Point32()
-        point.x = float(vertex[0])
-        point.y = float(vertex[1])
-        point.z = float(vertex[2])
+        point.x = float(vertex[0]) / 1000.0
+        point.y = float(vertex[1]) / 1000.0
+        point.z = float(vertex[2]) / 1000.0
         mesh_msg.vertices.append(point)
 
     # Add triangles
@@ -40,14 +41,18 @@ def npy_to_pose_array(npy_path):
 
     pose_array = PoseArray()
     for pose in poses:
+        matrix = pose.reshape(4,4)
+        translation = matrix[:3, 3]
+        orientation = tft.quaternion_from_matrix(matrix)
+
         p = Pose()
-        p.position.x = float(pose[0])
-        p.position.y = float(pose[1])
-        p.position.z = float(pose[2])
-        p.orientation.x = float(pose[3])
-        p.orientation.y = float(pose[4])
-        p.orientation.z = float(pose[5])
-        p.orientation.w = float(pose[6])
+        p.position.x = float(translation[0])
+        p.position.y = float(translation[1])
+        p.position.z = float(translation[2])
+        p.orientation.x = float(orientation[0])
+        p.orientation.y = float(orientation[1])
+        p.orientation.z = float(orientation[2])
+        p.orientation.w = float(orientation[3])
         pose_array.poses.append(p)
     return pose_array
 
@@ -80,9 +85,9 @@ def test_pick():
 
         # Invent some Pose
         pose = Pose()
-        pose.position.x = 0.0
-        pose.position.y = 0.5
-        pose.position.z = 0.5
+        pose.position.x = 0.5
+        pose.position.y = 0.0
+        pose.position.z = 0.7
         pose.orientation.x = 0.0
         pose.orientation.y = 0.0
         pose.orientation.z = 0.0
