@@ -124,7 +124,7 @@ class MotionService:
         rospy.loginfo("Done.")
 
 
-    def prepare_robot(self, req: PrepareRequest):
+    def prepare_robot(self, req):
         """
         Prepares the robot for operation by moving the torso and arm to a safe position.
         """
@@ -139,7 +139,7 @@ class MotionService:
 
         return PrepareResponse()
 
-    def pick(self, req: PickRequest):
+    def pick(self, req):
         mesh = req.object_mesh
         pose = req.object_pose
         grasps = req.grasps
@@ -179,7 +179,7 @@ class MotionService:
             moveit_grasps.append(moveit_grasp)
 
         self._visualize_grasps(moveit_grasps)
-        rospy.loginfo(f"Publishing {len(moveit_grasps)} grasp markers")
+        rospy.loginfo("Publishing {} grasp markers".format(len(moveit_grasps)))
 
         # Add object to planning scene
         self._add_object_to_scene(mesh, pose)
@@ -225,7 +225,7 @@ class MotionService:
             # Arrow for X axis
             marker_x = Marker()
             marker_x.header = grasp.grasp_pose.header
-            marker_x.ns = f"grasp_{idx}"
+            marker_x.ns = "grasp_{}".format(idx)
             marker_x.id = idx * 3
             marker_x.type = Marker.ARROW
             marker_x.action = Marker.ADD
