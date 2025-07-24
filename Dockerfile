@@ -25,5 +25,3 @@ RUN source /root/catkin_ws/devel/setup.bash
 
 WORKDIR /root
 COPY . /root/
-
-CMD [ "bash", "-c", "source /opt/ros/noetic/setup.bash && source /root/catkin_ws/devel/setup.bash && python3 /root/motion_service.py" ]
