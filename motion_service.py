@@ -85,6 +85,7 @@ class MotionService:
             position=Point(1.2, 0.0, 0.32),
             orientation=Quaternion(0.0, 0.0, 0.0, 1.0),
         )
+        self.scene.clear()
         self.scene.add_box(
             "table",
             table_pose,
