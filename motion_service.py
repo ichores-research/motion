@@ -103,6 +103,8 @@ class MotionService:
 
         rospy.loginfo("Done initializing Motion Service.")
 
+        rospy.loginfo(self.move_group.get_planning_frame())
+
 
     def _move_to_joint_positions(self, joint_positions):
         """
@@ -113,8 +115,13 @@ class MotionService:
         """
         rospy.loginfo("Moving to joint positions...")
         self.move_group.set_joint_value_target(joint_positions)
-        self.move_group.go(wait=True)
+
+        success = self.move_group.go(wait=True)
+
         self.move_group.stop()
+        self.move_group.clear_pose_targets()
+
+        return success
 
     def lower_head(self):
         """
@@ -143,15 +150,20 @@ class MotionService:
         rospy.loginfo("Unfolding arm safely...")
         # Move the torso to a safe position
         joint_positions = DEFAULT_POSE_JOINT_POSITIONS[self.group_name]
-        self._move_to_joint_positions(joint_positions)
+        success = self._move_to_joint_positions(joint_positions)
         
         # Lower the head
         self.lower_head()
-        rospy.loginfo("Robot prepared.")
 
+            
+        rospy.loginfo("Robot prepared.")
+            
         return PrepareResponse()
 
     def pick(self, req):
+
+        self.scene.clear()
+
         rospy.loginfo("Detecting workspace...")
         self._detect_workspace()  # Ensure workspace is detected before picking
 
@@ -205,8 +217,55 @@ class MotionService:
         # Attempt the pick operation
         success = self.move_group.pick("target_object", moveit_grasps)
 
+        self.move_group.stop()
+        self.move_group.clear_pose_targets()
+
         return PickResponse(success=success == 1, message="Pick operation completed." if success == 1 else "Pick operation failed.")
     
+    def place(self, req):
+        rospy.loginfo("Detecting workspace...")
+        self._detect_workspace()  # Ensure workspace is detected before placing
+
+        place_pose = req.place_pose
+        rospy.loginfo("Processing place request...")
+
+        #Convert place pose to moveit pose
+        moveit_place_pose = moveit_msgs.msg.PlaceLocation()
+        moveit_place_pose.place_pose = place_pose
+
+        moveit_place_pose.pre_place_approach.direction.header.frame_id = "base_footprint"
+        moveit_place_pose.pre_place_approach.direction.vector.z = -1.0  # Approach from above
+        moveit_place_pose.pre_place_approach.min_distance = 0.095
+        moveit_place_pose.pre_place_approach.desired_distance = 0.115
+
+        # Set post-grasp retreat
+        moveit_place_pose.post_place_retreat.direction.header.frame_id = "base_footprint"
+        moveit_place_pose.post_place_retreat.direction.vector.z = 1.0  # Retreat upwards
+        moveit_place_pose.post_place_retreat.min_distance = 0.1
+        moveit_place_pose.post_place_retreat.desired_distance = 0.25
+
+        # Set pre-place posture (closed gripper)
+        moveit_place_pose.pre_place_posture = self._get_gripper_posture(0.0)  # Closed position
+        
+        # Set placing posture (open gripper)
+        moveit_place_pose.place_posture = self._get_gripper_posture(0.04)  # Open position
+        
+        moveit_grasps.append(moveit_grasp)
+
+
+        # Set support surface if needed
+        self.move_group.set_support_surface_name("table")
+
+        # Attempt the pick operation
+        success = self.move_group.place("target_object", moveit_place_pose)
+
+        self.move_group.stop()
+        self.move_group.clear_pose_targets()
+
+        return PickResponse(success=success == 1, message="Pick operation completed." if success == 1 else "Pick operation failed.")
+    
+
+
     def detect_workspace(self, req: DetectWorkspaceRequest):
         """
         Detects the workspace by identifying the table and floor planes.
@@ -306,6 +365,7 @@ class MotionService:
             self.scene.add_box("table", table_pose, (largest_box.size.y, largest_box.size.x, largest_box.size.z))
 
 
+
         # Add floor plane to the scene
         floor_pose = PoseStamped()
         floor_pose.header.frame_id = 'base_footprint'
@@ -313,6 +373,8 @@ class MotionService:
         floor_pose.pose.position.y = 0.0
         floor_pose.pose.position.z = 0.0
         self.scene.add_box("floor", floor_pose, (10, 10, 0.01))
+
+        rospy.sleep(2)
 
         return
 

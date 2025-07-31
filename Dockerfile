@@ -24,5 +24,4 @@ RUN echo "source /root/catkin_ws/devel/setup.bash" >> ~/.bashrc
 RUN source /root/catkin_ws/devel/setup.bash
 
 
-WORKDIR /root
-COPY . /root/
+WORKDIR /root/motion
