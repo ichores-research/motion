@@ -1,14 +1,23 @@
+#!/usr/bin/env python3
+
 # ROS Service for motion planning
 # Exposes a simple API for motion templates such as "pick", "place", "move", etc.
 import argparse
-import rospy
-import moveit_commander
-from motion_msgs.srv import Prepare, PrepareRequest, PrepareResponse, Pick, PickRequest, PickResponse
+import subprocess
 
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+import numpy as np
+
+import moveit_commander
 import moveit_msgs
+import rosnode
+import rospy
 import trajectory_msgs
-from geometry_msgs.msg import Point, Quaternion, Pose, PoseStamped
+from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion
+from motion_msgs.srv import (Pick, PickRequest, PickResponse, Prepare,
+                             PrepareRequest, PrepareResponse, DetectWorkspace, DetectWorkspaceRequest, DetectWorkspaceResponse)
+from sensor_msgs.msg import PointCloud2
+from table_plane_extractor_msgs.srv import TablePlaneExtractor
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from visualization_msgs.msg import Marker, MarkerArray
 
 DEFAULT_POSE_JOINT_POSITIONS = {
@@ -39,6 +48,9 @@ DEFAULT_HEAD_JOINT_POSITIONS = [
     -0.75 # head_2_joint
 ]
 
+# Whether to enlarge the table bounding box to the floor level
+ENLARGE_TABLE_BB_TO_FLOOR = True  
+
 
 class MotionService:
     def __init__(self, group_name="arm_torso"):
@@ -62,7 +74,15 @@ class MotionService:
         # self.move_group.set_planning_time(30)
         # self.move_group.set_num_planning_attempts(3)
 
-        # Setup service
+        # Set up table detection
+        self.depth_topic = "xtion/depth_registered/points"
+        table_extractor_service = "/table_plane_extractor/get_planes"
+        self.table_extractor = rospy.ServiceProxy(table_extractor_service, TablePlaneExtractor)
+        rospy.loginfo('Waiting for table plane extractor service.')
+        rospy.wait_for_service(table_extractor_service)
+        rospy.loginfo('Service available.')
+
+        # Setup exposed service
         self.prepare_service = rospy.Service(
             "/motion/prepare", Prepare, self.prepare_robot
         )
@@ -71,24 +91,14 @@ class MotionService:
             "/motion/pick", Pick, self.pick
         )
 
+        self.detect_workspace_service = rospy.Service(
+            "/motion/detect_workspace", DetectWorkspace, self.detect_workspace
+        )
+
         self.marker_publisher = rospy.Publisher(
             "/motion/grasp_markers",
             MarkerArray,
             latch=True
-        )
-
-
-        # Dummy table
-        table_pose = PoseStamped()
-        table_pose.header.frame_id = "base_footprint"
-        table_pose.pose = Pose(
-            position=Point(1.2, 0.0, 0.32),
-            orientation=Quaternion(0.0, 0.0, 0.0, 1.0),
-        )
-        self.scene.add_box(
-            "table",
-            table_pose,
-            size=(1.5, 1.5, 0.75),
         )
 
         rospy.loginfo("Done initializing Motion Service.")
@@ -128,7 +138,9 @@ class MotionService:
         """
         Prepares the robot for operation by moving the torso and arm to a safe position.
         """
-        rospy.loginfo("Unfolding arm safely")
+        rospy.loginfo("Detecting workspace...")
+        self._detect_workspace()  # Ensure workspace is detected before picking
+        rospy.loginfo("Unfolding arm safely...")
         # Move the torso to a safe position
         joint_positions = DEFAULT_POSE_JOINT_POSITIONS[self.group_name]
         self._move_to_joint_positions(joint_positions)
@@ -140,10 +152,13 @@ class MotionService:
         return PrepareResponse()
 
     def pick(self, req):
+        rospy.loginfo("Detecting workspace...")
+        self._detect_workspace()  # Ensure workspace is detected before picking
+
         mesh = req.object_mesh
         pose = req.object_pose
         grasps = req.grasps
-        rospy.loginfo("Received pick request.")
+        rospy.loginfo("Processing pick request...")
 
         # Convert grasps from request into MoveIt format
         moveit_grasps = []
@@ -191,6 +206,16 @@ class MotionService:
         success = self.move_group.pick("target_object", moveit_grasps)
 
         return PickResponse(success=success == 1, message="Pick operation completed." if success == 1 else "Pick operation failed.")
+    
+    def detect_workspace(self, req: DetectWorkspaceRequest):
+        """
+        Detects the workspace by identifying the table and floor planes.
+        """
+        rospy.loginfo("Detecting workspace...")
+        self._detect_workspace()
+        rospy.loginfo("Workspace detection completed.")
+
+        return DetectWorkspaceResponse()
 
     def _get_gripper_posture(self, position):
         """Helper method to generate gripper posture"""
@@ -240,6 +265,70 @@ class MotionService:
         
         self.marker_publisher.publish(marker_array)
 
+    def _detect_workspace(self):
+        """
+        Detects the table using the table plane extractor service.
+        Returns a list of detected planes.
+        """
+        try:
+            cloud = rospy.wait_for_message(self.depth_topic, PointCloud2, timeout=5)
+        except rospy.ROSException as e:
+            rospy.logerr(f"Timeout while waiting for point cloud message: {e}")
+            return
+
+        try:
+            response = self.table_extractor(cloud)
+            boxes = response.plane_bounding_boxes
+        except rospy.ServiceException as e:
+            rospy.logerr(f"Table plane extractor service call failed: {e}")
+            return
+        except Exception as e:
+            rospy.logerr(f"Unexpected error during table detection: {e}")
+            return
+        
+        
+
+        largest_box = None
+
+        for box in boxes.boxes:
+            if largest_box is None or box.size.x * box.size.y > largest_box.size.x * largest_box.size.y:
+                largest_box = box
+
+        if largest_box is None:
+            rospy.logwarn("No table detected.")
+        else:
+            table_pose = PoseStamped()
+            table_pose.header.frame_id = 'base_footprint'
+            table_pose.pose.position.x = largest_box.center.position.x
+            table_pose.pose.position.y = largest_box.center.position.y
+            table_pose.pose.position.z = largest_box.center.position.z
+
+            self.scene.add_box("table", table_pose, (largest_box.size.y, largest_box.size.x, largest_box.size.z))
+
+
+        # Add floor plane to the scene
+        floor_pose = PoseStamped()
+        floor_pose.header.frame_id = 'base_footprint'
+        floor_pose.pose.position.x = 0.0
+        floor_pose.pose.position.y = 0.0
+        floor_pose.pose.position.z = 0.0
+        self.scene.add_box("floor", floor_pose, (10, 10, 0.01))
+
+        return
+
+
+def kill_head_manager():
+    """
+    Kills the head_manager node if it is running.
+    This is useful to ensure that the head manager does not interfere with the motion service.
+    """
+    rospy.loginfo("Killing head_manager node if running...")
+    try:
+        if "/pal_head_manager" in rosnode.get_node_names():
+            subprocess.call(["rosnode", "kill", "/pal_head_manager"])
+            rospy.loginfo("pal_head_manager node killed.")
+    except Exception as e:
+        rospy.logwarn("Could not kill pal_head_manager node: {}".format(e))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Motion Service")
@@ -251,5 +340,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    
+    kill_head_manager()
     motion_service = MotionService(group_name=args.group_name)
     rospy.spin()
