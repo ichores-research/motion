@@ -207,7 +207,7 @@ class MotionService:
 
         return PickResponse(success=success == 1, message="Pick operation completed." if success == 1 else "Pick operation failed.")
     
-    def detect_workspace(self, req: DetectWorkspaceRequest):
+    def detect_workspace(self, req):
         """
         Detects the workspace by identifying the table and floor planes.
         """
@@ -273,24 +273,24 @@ class MotionService:
         try:
             cloud = rospy.wait_for_message(self.depth_topic, PointCloud2, timeout=5)
         except rospy.ROSException as e:
-            rospy.logerr(f"Timeout while waiting for point cloud message: {e}")
+            rospy.logerr("Timeout while waiting for point cloud message: {}".format(e))
             return
 
         try:
             response = self.table_extractor(cloud)
             boxes = response.plane_bounding_boxes
         except rospy.ServiceException as e:
-            rospy.logerr(f"Table plane extractor service call failed: {e}")
+            rospy.logerr("Table plane extractor service call failed: {}".format(e))
             return
         except Exception as e:
-            rospy.logerr(f"Unexpected error during table detection: {e}")
+            rospy.logerr("Unexpected error during table detection: {}".format(e))
             return
         
         
 
         largest_box = None
 
-        for box in boxes.boxes:
+        for box in boxes:
             if largest_box is None or box.size.x * box.size.y > largest_box.size.x * largest_box.size.y:
                 largest_box = box
 
