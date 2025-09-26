@@ -279,6 +279,7 @@ class MotionService:
         try:
             response = self.table_extractor(cloud)
             boxes = response.plane_bounding_boxes
+            rospy.loginfo("Found {} tables".format(len(boxes)))
         except rospy.ServiceException as e:
             rospy.logerr("Table plane extractor service call failed: {}".format(e))
             return
