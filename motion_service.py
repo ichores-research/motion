@@ -66,13 +66,28 @@ class MotionService:
         # Setup MoveIt
         self.robot = moveit_commander.RobotCommander()
         self.scene = moveit_commander.PlanningSceneInterface()
-        self.move_group = moveit_commander.MoveGroupCommander(group_name)
+        while True:
+            try:
+                self.move_group = moveit_commander.MoveGroupCommander(group_name)
+                break
+            except RuntimeError as e:
+                print("Error", e)
+                rospy.sleep(2)
+                continue
+
+
 
         # Change end effector link
         self.move_group.set_end_effector_link("gripper_link")
-        # self.move_group.allow_replanning(True)
-        # self.move_group.set_planning_time(30)
-        # self.move_group.set_num_planning_attempts(3)
+
+        self.move_group.set_goal_joint_tolerance(0.6)
+        self.move_group.set_goal_orientation_tolerance(0.6)
+        self.move_group.set_goal_position_tolerance(0.6)
+
+        
+        self.move_group.allow_replanning(True)
+        self.move_group.set_planning_time(30)
+        self.move_group.set_num_planning_attempts(10)
 
         # Set up table detection
         self.depth_topic = "xtion/depth_registered/points"
@@ -116,10 +131,13 @@ class MotionService:
         rospy.loginfo("Moving to joint positions...")
         self.move_group.set_joint_value_target(joint_positions)
 
+        self.move_group.allow_trajectory_execution = True
+
         success = self.move_group.go(wait=True)
 
         self.move_group.stop()
         self.move_group.clear_pose_targets()
+        
 
         return success
 
@@ -146,6 +164,7 @@ class MotionService:
         Prepares the robot for operation by moving the torso and arm to a safe position.
         """
         rospy.loginfo("Detecting workspace...")
+        self.scene.clear()
         self._detect_workspace()  # Ensure workspace is detected before picking
         rospy.loginfo("Unfolding arm safely...")
         # Move the torso to a safe position
@@ -214,57 +233,17 @@ class MotionService:
         # Set support surface if needed
         self.move_group.set_support_surface_name("table")
 
+        self.move_group.allow_trajectory_execution = True
+
         # Attempt the pick operation
         success = self.move_group.pick("target_object", moveit_grasps)
 
         self.move_group.stop()
         self.move_group.clear_pose_targets()
+        
 
         return PickResponse(success=success == 1, message="Pick operation completed." if success == 1 else "Pick operation failed.")
     
-    def place(self, req):
-        rospy.loginfo("Detecting workspace...")
-        self._detect_workspace()  # Ensure workspace is detected before placing
-
-        place_pose = req.place_pose
-        rospy.loginfo("Processing place request...")
-
-        #Convert place pose to moveit pose
-        moveit_place_pose = moveit_msgs.msg.PlaceLocation()
-        moveit_place_pose.place_pose = place_pose
-
-        moveit_place_pose.pre_place_approach.direction.header.frame_id = "base_footprint"
-        moveit_place_pose.pre_place_approach.direction.vector.z = -1.0  # Approach from above
-        moveit_place_pose.pre_place_approach.min_distance = 0.095
-        moveit_place_pose.pre_place_approach.desired_distance = 0.115
-
-        # Set post-grasp retreat
-        moveit_place_pose.post_place_retreat.direction.header.frame_id = "base_footprint"
-        moveit_place_pose.post_place_retreat.direction.vector.z = 1.0  # Retreat upwards
-        moveit_place_pose.post_place_retreat.min_distance = 0.1
-        moveit_place_pose.post_place_retreat.desired_distance = 0.25
-
-        # Set pre-place posture (closed gripper)
-        moveit_place_pose.pre_place_posture = self._get_gripper_posture(0.0)  # Closed position
-        
-        # Set placing posture (open gripper)
-        moveit_place_pose.place_posture = self._get_gripper_posture(0.04)  # Open position
-        
-        moveit_grasps.append(moveit_grasp)
-
-
-        # Set support surface if needed
-        self.move_group.set_support_surface_name("table")
-
-        # Attempt the pick operation
-        success = self.move_group.place("target_object", moveit_place_pose)
-
-        self.move_group.stop()
-        self.move_group.clear_pose_targets()
-
-        return PickResponse(success=success == 1, message="Pick operation completed." if success == 1 else "Pick operation failed.")
-    
-
 
     def detect_workspace(self, req: DetectWorkspaceRequest):
         """
@@ -360,13 +339,13 @@ class MotionService:
             table_pose.header.frame_id = 'base_footprint'
             table_pose.pose.position.x = largest_box.center.position.x
             table_pose.pose.position.y = largest_box.center.position.y
-            table_pose.pose.position.z = largest_box.center.position.z
+            table_pose.pose.position.z = largest_box.center.position.z - 0.001
 
             self.scene.add_box("table", table_pose, (largest_box.size.y, largest_box.size.x, largest_box.size.z))
+            rospy.sleep(1)
 
 
-
-        # Add floor plane to the scene
+        # # Add floor plane to the scene
         floor_pose = PoseStamped()
         floor_pose.header.frame_id = 'base_footprint'
         floor_pose.pose.position.x = 0.0
@@ -374,7 +353,7 @@ class MotionService:
         floor_pose.pose.position.z = 0.0
         self.scene.add_box("floor", floor_pose, (10, 10, 0.01))
 
-        rospy.sleep(2)
+        rospy.sleep(1)
 
         return
 
