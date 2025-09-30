@@ -2,6 +2,8 @@
 
 This repository provides a motion service for the Tiago robot, exposing a repertoire of actions such as `pick` and `prepare_robot`. It supports both ROS Noetic and Melodic distributions.
 
+This service requires table_surface_extractor service to be running -> https://github.com/ichores-research/table_plane_extractor.
+
 ## Getting Started
 
 ### Building the Docker Image
