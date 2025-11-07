@@ -5,9 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt update \
  && apt install -y --no-install-recommends ros-noetic-moveit ros-noetic-vision-msgs ros-noetic-tf2-sensor-msgs
 
-RUN apt install -y python3-catkin-tools git python3-pip
-
-RUN pip install -U numpy open3d
+RUN apt install -y python3-catkin-tools git
 
 SHELL ["/bin/bash", "-c"]
 RUN echo "source /opt/ros/noetic/setup.bash" >> ~/.bashrc
@@ -24,4 +22,7 @@ RUN echo "source /root/catkin_ws/devel/setup.bash" >> ~/.bashrc
 RUN source /root/catkin_ws/devel/setup.bash
 
 
-WORKDIR /root/motion
+WORKDIR /root
+COPY . /root/
+
+CMD [ "bash", "-c", "source /opt/ros/noetic/setup.bash && source /root/catkin_ws/devel/setup.bash && python3 /root/motion_service.py" ]
