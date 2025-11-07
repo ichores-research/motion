@@ -66,13 +66,28 @@ class MotionService:
         # Setup MoveIt
         self.robot = moveit_commander.RobotCommander()
         self.scene = moveit_commander.PlanningSceneInterface()
-        self.move_group = moveit_commander.MoveGroupCommander(group_name)
+        while True:
+            try:
+                self.move_group = moveit_commander.MoveGroupCommander(group_name)
+                break
+            except RuntimeError as e:
+                print("Error", e)
+                rospy.sleep(2)
+                continue
+
+
 
         # Change end effector link
         self.move_group.set_end_effector_link("gripper_link")
-        # self.move_group.allow_replanning(True)
-        # self.move_group.set_planning_time(30)
-        # self.move_group.set_num_planning_attempts(3)
+
+        self.move_group.set_goal_joint_tolerance(0.6)
+        self.move_group.set_goal_orientation_tolerance(0.6)
+        self.move_group.set_goal_position_tolerance(0.6)
+
+        
+        self.move_group.allow_replanning(True)
+        self.move_group.set_planning_time(30)
+        self.move_group.set_num_planning_attempts(10)
 
         # Set up table detection
         self.depth_topic = "xtion/depth_registered/points"
@@ -103,6 +118,8 @@ class MotionService:
 
         rospy.loginfo("Done initializing Motion Service.")
 
+        rospy.loginfo(self.move_group.get_planning_frame())
+
 
     def _move_to_joint_positions(self, joint_positions):
         """
@@ -113,8 +130,16 @@ class MotionService:
         """
         rospy.loginfo("Moving to joint positions...")
         self.move_group.set_joint_value_target(joint_positions)
-        self.move_group.go(wait=True)
+
+        self.move_group.allow_trajectory_execution = True
+
+        success = self.move_group.go(wait=True)
+
         self.move_group.stop()
+        self.move_group.clear_pose_targets()
+        
+
+        return success
 
     def lower_head(self):
         """
@@ -139,19 +164,25 @@ class MotionService:
         Prepares the robot for operation by moving the torso and arm to a safe position.
         """
         rospy.loginfo("Detecting workspace...")
+        self.scene.clear()
         self._detect_workspace()  # Ensure workspace is detected before picking
         rospy.loginfo("Unfolding arm safely...")
         # Move the torso to a safe position
         joint_positions = DEFAULT_POSE_JOINT_POSITIONS[self.group_name]
-        self._move_to_joint_positions(joint_positions)
+        success = self._move_to_joint_positions(joint_positions)
         
         # Lower the head
         self.lower_head()
-        rospy.loginfo("Robot prepared.")
 
+            
+        rospy.loginfo("Robot prepared.")
+            
         return PrepareResponse()
 
     def pick(self, req):
+
+        self.scene.clear()
+
         rospy.loginfo("Detecting workspace...")
         self._detect_workspace()  # Ensure workspace is detected before picking
 
@@ -202,12 +233,21 @@ class MotionService:
         # Set support surface if needed
         self.move_group.set_support_surface_name("table")
 
+        self.move_group.allow_trajectory_execution = True
+
         # Attempt the pick operation
         success = self.move_group.pick("target_object", moveit_grasps)
 
+        self.move_group.stop()
+        self.move_group.clear_pose_targets()
+        
+
         return PickResponse(success=success == 1, message="Pick operation completed." if success == 1 else "Pick operation failed.")
     
-    def detect_workspace(self, req):
+
+
+    def detect_workspace(self, req: DetectWorkspaceRequest):
+
         """
         Detects the workspace by identifying the table and floor planes.
         """
@@ -302,18 +342,21 @@ class MotionService:
             table_pose.header.frame_id = 'base_footprint'
             table_pose.pose.position.x = largest_box.center.position.x
             table_pose.pose.position.y = largest_box.center.position.y
-            table_pose.pose.position.z = largest_box.center.position.z
+            table_pose.pose.position.z = largest_box.center.position.z - 0.001
 
             self.scene.add_box("table", table_pose, (largest_box.size.y, largest_box.size.x, largest_box.size.z))
+            rospy.sleep(1)
 
 
-        # Add floor plane to the scene
+        # # Add floor plane to the scene
         floor_pose = PoseStamped()
         floor_pose.header.frame_id = 'base_footprint'
         floor_pose.pose.position.x = 0.0
         floor_pose.pose.position.y = 0.0
         floor_pose.pose.position.z = 0.0
         self.scene.add_box("floor", floor_pose, (10, 10, 0.01))
+
+        rospy.sleep(1)
 
         return
 

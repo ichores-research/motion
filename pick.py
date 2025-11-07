@@ -90,6 +90,10 @@ class PickObject:
 
         rospy.loginfo("Planning...")
         (success, trajectory, time, error) = self.move_group.plan()
+        if not success:
+            rospy.logerr("Planning failed: " + str(error))
+            return
+
         rospy.logwarn(str(trajectory))
         rospy.loginfo("Planned.")
 
