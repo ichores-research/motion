@@ -19,6 +19,7 @@ from sensor_msgs.msg import PointCloud2
 from table_plane_extractor_msgs.srv import TablePlaneExtractor
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from visualization_msgs.msg import Marker, MarkerArray
+import threading
 
 DEFAULT_POSE_JOINT_POSITIONS = {
     "arm_torso": [
@@ -57,6 +58,9 @@ class MotionService:
         self.group_name = group_name
         rospy.loginfo("Initializing Motion Service...")
         rospy.init_node("motion_service_node")
+        rospy.on_shutdown(self.on_ros_shutdown)
+        self.move_group_lock = threading.Lock()
+
 
         # Setup head controller
         self.head_cmd = rospy.Publisher(
@@ -70,9 +74,12 @@ class MotionService:
 
         # Change end effector link
         self.move_group.set_end_effector_link("gripper_link")
-        # self.move_group.allow_replanning(True)
-        # self.move_group.set_planning_time(30)
-        # self.move_group.set_num_planning_attempts(3)
+        #self.move_group.set_end_effector_link("gripper_fingertips_frame")
+        #self.move_group.set_goal_tolerance(0.01)
+        #self.move_group.set_planner_id("RRTConnectkConfigDefault")
+        #self.move_group.allow_replanning(True)
+        self.move_group.set_planning_time(120.0)
+        self.move_group.set_num_planning_attempts(3)
 
         # Set up table detection
         self.depth_topic = "xtion/depth_registered/points"
@@ -152,61 +159,76 @@ class MotionService:
         return PrepareResponse()
 
     def pick(self, req):
-        rospy.loginfo("Detecting workspace...")
-        self._detect_workspace()  # Ensure workspace is detected before picking
+        with self.move_group_lock:
+            rospy.loginfo("Detecting workspace...")
+            self._detect_workspace()  # Ensure workspace is detected before picking
 
-        mesh = req.object_mesh
-        pose = req.object_pose
-        grasps = req.grasps
-        rospy.loginfo("Processing pick request...")
+            self.scene.remove_world_object("target_object")
+            rospy.sleep(0.5)
 
-        # Convert grasps from request into MoveIt format
-        moveit_grasps = []
-        for grasp in grasps.poses:
-            moveit_grasp = moveit_msgs.msg.Grasp()
-            moveit_grasp.grasp_pose = grasp
+            mesh = req.object_mesh
+            pose = req.object_pose
+            grasps = req.grasps
+            rospy.loginfo("Processing pick request...")
 
-            # Convert Pose to PoseStamped
-            grasp_pose_stamped = PoseStamped()
-            grasp_pose_stamped.header.frame_id = "base_footprint"
-            grasp_pose_stamped.header.stamp = rospy.Time.now()
-            grasp_pose_stamped.pose = grasp
-            moveit_grasp.grasp_pose = grasp_pose_stamped
-            
-            # Set pre-grasp approach
-            moveit_grasp.pre_grasp_approach.direction.header.frame_id = "base_footprint"
-            moveit_grasp.pre_grasp_approach.direction.vector.z = -1.0  # Approach from above
-            moveit_grasp.pre_grasp_approach.min_distance = 0.095
-            moveit_grasp.pre_grasp_approach.desired_distance = 0.115
 
-            # Set post-grasp retreat
-            moveit_grasp.post_grasp_retreat.direction.header.frame_id = "base_footprint"
-            moveit_grasp.post_grasp_retreat.direction.vector.z = 1.0  # Retreat upwards
-            moveit_grasp.post_grasp_retreat.min_distance = 0.1
-            moveit_grasp.post_grasp_retreat.desired_distance = 0.25
+            try:
 
-            # Set pre-grasp posture (open gripper)
-            moveit_grasp.pre_grasp_posture = self._get_gripper_posture(0.04)  # Open position
-            
-            # Set grasp posture (closed gripper)
-            moveit_grasp.grasp_posture = self._get_gripper_posture(0.0)  # Closed position
-            
-            moveit_grasps.append(moveit_grasp)
+                # Convert grasps from request into MoveIt format
+                moveit_grasps = []
+                for grasp in grasps.poses:
+                    moveit_grasp = moveit_msgs.msg.Grasp()
+                    moveit_grasp.grasp_pose = grasp
 
-        self._visualize_grasps(moveit_grasps)
-        rospy.loginfo("Publishing {} grasp markers".format(len(moveit_grasps)))
+                    # Convert Pose to PoseStamped
+                    grasp_pose_stamped = PoseStamped()
+                    grasp_pose_stamped.header.frame_id = "base_footprint"
+                    grasp_pose_stamped.header.stamp = rospy.Time.now()
+                    grasp_pose_stamped.pose = grasp
+                    moveit_grasp.grasp_pose = grasp_pose_stamped
+                    
+                    # Set pre-grasp approach
+                    moveit_grasp.pre_grasp_approach.direction.header.frame_id = "base_footprint"
+                    moveit_grasp.pre_grasp_approach.direction.vector.z = -1.0  # Approach from above
+                    moveit_grasp.pre_grasp_approach.min_distance = 0.095
+                    moveit_grasp.pre_grasp_approach.desired_distance = 0.115
 
-        # Add object to planning scene
-        self._add_object_to_scene(mesh, pose)
+                    # Set post-grasp retreat
+                    moveit_grasp.post_grasp_retreat.direction.header.frame_id = "base_footprint"
+                    moveit_grasp.post_grasp_retreat.direction.vector.z = 1.0  # Retreat upwards
+                    moveit_grasp.post_grasp_retreat.min_distance = 0.1
+                    moveit_grasp.post_grasp_retreat.desired_distance = 0.25
 
-        # Set support surface if needed
-        self.move_group.set_support_surface_name("table")
+                    # Set pre-grasp posture (open gripper)
+                    moveit_grasp.pre_grasp_posture = self._get_gripper_posture(0.04)  # Open position
+                    
+                    # Set grasp posture (closed gripper)
+                    moveit_grasp.grasp_posture = self._get_gripper_posture(0.0)  # Closed position
+                    
+                    moveit_grasps.append(moveit_grasp)
 
-        # Attempt the pick operation
-        success = self.move_group.pick("target_object", moveit_grasps)
+                self._visualize_grasps(moveit_grasps)
+                rospy.loginfo("Publishing {} grasp markers".format(len(moveit_grasps)))
 
-        return PickResponse(success=success == 1, message="Pick operation completed." if success == 1 else "Pick operation failed.")
-    
+                # Add object to planning scene
+                self._add_object_to_scene(mesh, pose)
+
+                # Set support surface if needed
+                self.move_group.set_support_surface_name("table")
+
+                # Attempt the pick operation
+                success = self.move_group.pick("target_object", moveit_grasps)
+
+                return PickResponse(success=success == 1, message="Pick operation completed." if success == 1 else "Pick operation failed.")
+
+            except Exception as e: 
+                rospy.logerr(f"Pick operation exception: {e}")
+                # Critical: clean up on failure
+                self.move_group.stop()
+                self.move_group.clear_pose_targets()
+                self.scene.remove_world_object("target_object")
+            return PickResponse(success=False, message=str(e))                
+
     def detect_workspace(self, req):
         """
         Detects the workspace by identifying the table and floor planes.
@@ -260,16 +282,23 @@ class MotionService:
             marker_x.scale.z = 0.01  # Arrow height
             marker_x.color.r = 1.0
             marker_x.color.a = 1.0
-            
             marker_array.markers.append(marker_x)
         
         self.marker_publisher.publish(marker_array)
+        rospy.sleep(.5)
 
     def _detect_workspace(self):
         """
         Detects the table using the table plane extractor service.
         Returns a list of detected planes.
         """
+        try:
+            self.scene.remove_world_object("table")
+            self.scene.remove_world_object("floor")
+            rospy.sleep(0.5)  
+        except Exception as e: 
+            rospy.logwarn("Table or floor not published previously")
+
         try:
             cloud = rospy.wait_for_message(self.depth_topic, PointCloud2, timeout=5)
         except rospy.ROSException as e:
@@ -286,8 +315,6 @@ class MotionService:
         except Exception as e:
             rospy.logerr("Unexpected error during table detection: {}".format(e))
             return
-        
-        
 
         largest_box = None
 
@@ -305,7 +332,7 @@ class MotionService:
             table_pose.pose.position.z = largest_box.center.position.z
 
             self.scene.add_box("table", table_pose, (largest_box.size.y, largest_box.size.x, largest_box.size.z))
-
+            rospy.sleep(0.5)  
 
         # Add floor plane to the scene
         floor_pose = PoseStamped()
@@ -314,8 +341,30 @@ class MotionService:
         floor_pose.pose.position.y = 0.0
         floor_pose.pose.position.z = 0.0
         self.scene.add_box("floor", floor_pose, (10, 10, 0.01))
+        rospy.sleep(0.5)  
 
         return
+
+
+    def _reset_move_group(self):
+        """Reset move_group to clean state"""
+        try:
+            self.move_group.stop()
+            self.move_group.clear_pose_targets()
+            # Clear all objects from scene
+            for name in self.scene.get_known_object_names():
+                if name not in ["table", "floor"]:  # Keep workspace
+                    self.scene.remove_world_object(name)
+        except Exception as e:
+            rospy.logerr(f"Error resetting move_group: {e}")
+
+    def on_ros_shutdown(self):
+        rospy.loginfo("ROS shutdown called, cleaning up...")
+        try:
+            self.move_group.stop()
+            self.move_group.clear_pose_targets()
+        except Exception:
+            pass
 
 
 def kill_head_manager():
@@ -345,3 +394,6 @@ if __name__ == "__main__":
     kill_head_manager()
     motion_service = MotionService(group_name=args.group_name)
     rospy.spin()
+
+
+
