@@ -25,10 +25,15 @@ class PickObject:
         self.display_trajectory_publisher = rospy.Publisher('/move_group/display_planned_path', moveit_msgs.msg.DisplayTrajectory, queue_size=20)
 
         # Change end effector link
-        self.move_group.set_end_effector_link("gripper_link")
+        end_effector_link = "gripper_link"
+        self.move_group.set_end_effector_link(end_effector_link)
+        self.move_group.set_planner_id("ESTkConfigDefault")
         self.move_group.allow_replanning(True)
         self.move_group.set_planning_time(30)
-        self.move_group.set_num_planning_attempts(3)
+        self.move_group.set_num_planning_attempts(100) # TODO: Test whether number of attempts makes a difference here
+
+        # TODO: Testing whether clearing the planning scene makes a difference
+        self.scene.clear()
 
         self.scene_srv = rospy.ServiceProxy('/get_planning_scene', GetPlanningScene)
         self.scene_srv.wait_for_service()

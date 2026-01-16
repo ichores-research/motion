@@ -77,9 +77,16 @@ class MotionService:
         #self.move_group.set_end_effector_link("gripper_fingertips_frame")
         #self.move_group.set_goal_tolerance(0.01)
         #self.move_group.set_planner_id("RRTConnectkConfigDefault")
-        #self.move_group.allow_replanning(True)
+        self.move_group.allow_replanning(True) # TODO: Testing whether allowing to replan makes a difference
         self.move_group.set_planning_time(120.0)
-        self.move_group.set_num_planning_attempts(3)
+        self.move_group.set_num_planning_attempts(10)
+
+        # TODO: Try checking whether the allowed tolerance makes a difference
+        try:
+            rospy.set_param("/move_group/trajectory_execution/allowed_start_tolerance", 0.05)
+            rospy.loginfo("Set the allowed start tolerance to 0.05")
+        except Exception as e:
+            rospy.logwarn(f"Could not set allowed allowed start tolerance: {e}")
 
         # Set up table detection
         self.depth_topic = "xtion/depth_registered/points"
@@ -158,13 +165,55 @@ class MotionService:
 
         return PrepareResponse()
 
+    def _cleanup_target_object(self):
+        try:
+            attached_objects = self.scene.get_attached_objects(["target_object"])
+            if "target_object" in attached_objects:
+                rospy.loginfo("Detaching target_object from gripper...")
+                self.move_group.detach_object("target_object")
+                rospy.sleep(0.3)
+
+                self.robot.remove
+            
+            if "target_object" in self.scene.get_known_object_names():
+                rospy.loginfo("Removing target object from world...")
+                self.scene.remove_world_object("target_object")
+                rospy.sleep(0.3)
+
+            rospy.loginfo("Target object cleanup complete.")
+        except Exception as e:
+            rospy.logwarn(f"Error during target object cleanup: {e}")
+
     def pick(self, req):
         with self.move_group_lock:
             rospy.loginfo("Detecting workspace...")
             self._detect_workspace()  # Ensure workspace is detected before picking
 
-            self.scene.remove_world_object("target_object")
+            # Debugging
+            rospy.loginfo(f"Before cleaning up target object:")
+            rospy.loginfo(f"attached objects: {self.scene.get_attached_objects(['target_object'])}")
+            rospy.loginfo(f"Known objects: {self.scene.get_known_object_names()}")
+
+
+            # TODO: Testing whether instead of removing the world object, we can cleanup the target object
+            self._cleanup_target_object()
+            self.scene.remove_world_object("target_object") # TODO: It might be important that we do this after cleaning up the target object
+
             rospy.sleep(0.5)
+
+
+            # Debugging
+            rospy.loginfo(f"After cleaning up target object:")
+            rospy.loginfo(f"attached objects: {self.scene.get_attached_objects(['target_object'])}")
+            rospy.loginfo(f"Known objects: {self.scene.get_known_object_names()}")
+
+            # TODO: Testing whether we can reset the moveit state
+            rospy.loginfo("Resetting MoveIt state for new planning attempt...")
+            self.move_group.stop()
+            self.move_group.clear_pose_targets()
+            self.move_group.clear_path_constraints()
+            self.move_group.set_start_state_to_current_state()
+            rospy.sleep(0.2)
 
             mesh = req.object_mesh
             pose = req.object_pose
@@ -203,7 +252,7 @@ class MotionService:
                     moveit_grasp.pre_grasp_posture = self._get_gripper_posture(0.04)  # Open position
                     
                     # Set grasp posture (closed gripper)
-                    moveit_grasp.grasp_posture = self._get_gripper_posture(0.0)  # Closed position
+                    moveit_grasp.grasp_posture = self._get_gripper_posture(0.025)  # Closed position
                     
                     moveit_grasps.append(moveit_grasp)
 
@@ -218,6 +267,10 @@ class MotionService:
 
                 # Attempt the pick operation
                 success = self.move_group.pick("target_object", moveit_grasps)
+
+                if success == 1:
+                    self.scene.remove_world_object("target_object")
+                    rospy.loginfo("Removed world object...")
 
                 return PickResponse(success=success == 1, message="Pick operation completed." if success == 1 else "Pick operation failed.")
 

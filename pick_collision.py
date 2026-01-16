@@ -28,7 +28,7 @@ class PickObject:
         self.move_group.set_end_effector_link("gripper_link")
         self.move_group.allow_replanning(True)
         self.move_group.set_planning_time(30)
-        self.move_group.set_num_planning_attempts(3)
+        self.move_group.set_num_planning_attempts(10)
 
         self.scene_srv = rospy.ServiceProxy('/get_planning_scene', GetPlanningScene)
         self.scene_srv.wait_for_service()
