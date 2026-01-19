@@ -172,8 +172,6 @@ class MotionService:
                 rospy.loginfo("Detaching target_object from gripper...")
                 self.move_group.detach_object("target_object")
                 rospy.sleep(0.3)
-
-                self.robot.remove
             
             if "target_object" in self.scene.get_known_object_names():
                 rospy.loginfo("Removing target object from world...")
