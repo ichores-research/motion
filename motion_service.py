@@ -233,7 +233,7 @@ class MotionService:
                     grasp_pose_stamped.header.stamp = rospy.Time.now()
                     grasp_pose_stamped.pose = grasp
                     moveit_grasp.grasp_pose = grasp_pose_stamped
-                    
+
                     # Set pre-grasp approach
                     moveit_grasp.pre_grasp_approach.direction.header.frame_id = "base_footprint"
                     moveit_grasp.pre_grasp_approach.direction.vector.z = -1.0  # Approach from above
@@ -251,6 +251,9 @@ class MotionService:
                     
                     # Set grasp posture (closed gripper)
                     moveit_grasp.grasp_posture = self._get_gripper_posture(0.025)  # Closed position
+
+                    # Set maximum contact force
+                    moveit_grasp.max_contact_force = 0.1
                     
                     moveit_grasps.append(moveit_grasp)
 
