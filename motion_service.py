@@ -12,14 +12,17 @@ import moveit_msgs
 import rosnode
 import rospy
 import trajectory_msgs
-from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion
+from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion, Vector3Stamped
 from motion_msgs.srv import (Pick, PickRequest, PickResponse, Prepare,
                              PrepareRequest, PrepareResponse, DetectWorkspace, DetectWorkspaceRequest, DetectWorkspaceResponse)
+from std_srvs.srv import SetBool, SetBoolRequest, SetBoolResponse, EmptyRequest, EmptyResponse, Empty
 from sensor_msgs.msg import PointCloud2
 from table_plane_extractor_msgs.srv import TablePlaneExtractor
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from visualization_msgs.msg import Marker, MarkerArray
 import threading
+from tf.transformations import quaternion_from_euler
+import math
 
 DEFAULT_POSE_JOINT_POSITIONS = {
     "arm_torso": [
@@ -60,7 +63,7 @@ class MotionService:
         rospy.init_node("motion_service_node")
         rospy.on_shutdown(self.on_ros_shutdown)
         self.move_group_lock = threading.Lock()
-
+        
 
         # Setup head controller
         self.head_cmd = rospy.Publisher(
@@ -71,15 +74,40 @@ class MotionService:
         self.robot = moveit_commander.RobotCommander()
         self.scene = moveit_commander.PlanningSceneInterface()
         self.move_group = moveit_commander.MoveGroupCommander(group_name)
+        self.finger_group = moveit_commander.MoveGroupCommander("gripper")
 
         # Change end effector link
         self.move_group.set_end_effector_link("gripper_link")
         #self.move_group.set_end_effector_link("gripper_fingertips_frame")
         #self.move_group.set_goal_tolerance(0.01)
         #self.move_group.set_planner_id("RRTConnectkConfigDefault")
-        self.move_group.allow_replanning(True) # TODO: Testing whether allowing to replan makes a difference
+        # self.move_group.allow_replanning(True) # TODO: Testing whether allowing to replan makes a difference
         self.move_group.set_planning_time(120.0)
         self.move_group.set_num_planning_attempts(10)
+        # self.move_group.set_start_state_to_current_state()
+
+
+        #IF OCTOMAP IS ENABLE
+
+        # try:
+        #     # Actual update rate control
+        #     rospy.set_param("/move_group/sensors", ["sensor_plugin/point_cloud"])
+        #     rospy.set_param("/move_group/sensor_plugin/point_cloud/sensor_plugin", "occupancy_map_monitor/PointCloudOctomapUpdater")
+            
+        #     # THIS is update frequency - how often octomap processes new data (seconds between updates)
+        #     rospy.set_param("/move_group/sensor_plugin/point_cloud/point_subsample", 1)
+        #     rospy.set_param("/move_group/max_range", 1.0)
+        #     rospy.set_param("/move_group/sensor_plugin/point_cloud/padding_offset", 0.1)
+        #     rospy.set_param("/move_group/sensor_plugin/point_cloud/padding_scale", 1.0)
+            
+        #     # Most important - point cloud decimation/subsampling
+        #     rospy.set_param("/move_group/sensor_plugin/point_cloud/point_subsample", 3)  # Process every 3rd point
+        #     rospy.set_param("/move_group/sensor_plugin/point_cloud/max_update_rate", 1.0)  # Update max 1Hz instead of continuous
+            
+        #     rospy.loginfo("Throttled octomap update rate")
+        # except Exception as e:
+        #     rospy.logwarn(f"Could not throttle octomap: {e}")
+
 
         # TODO: Try checking whether the allowed tolerance makes a difference
         try:
@@ -105,9 +133,16 @@ class MotionService:
             "/motion/pick", Pick, self.pick
         )
 
+        self.pick_service = rospy.Service(
+            "/motion/place", Pick, self.place
+        )
+
+
         self.detect_workspace_service = rospy.Service(
             "/motion/detect_workspace", DetectWorkspace, self.detect_workspace
         )
+
+        self.reset_planning_scene_service = rospy.Service("/motion/reset_planning_scene", SetBool, self.planning_scene_reset)
 
         self.marker_publisher = rospy.Publisher(
             "/motion/grasp_markers",
@@ -117,7 +152,6 @@ class MotionService:
 
         rospy.loginfo("Done initializing Motion Service.")
 
-
     def _move_to_joint_positions(self, joint_positions):
         """
         Moves the robot to the specified joint positions.
@@ -125,10 +159,12 @@ class MotionService:
         :param joint_names: List of joint names.
         :param joint_positions: List of joint position values.
         """
-        rospy.loginfo("Moving to joint positions...")
-        self.move_group.set_joint_value_target(joint_positions)
-        self.move_group.go(wait=True)
-        self.move_group.stop()
+        # with self.move_group_lock:        
+        if 1: 
+            rospy.loginfo("Moving to joint positions...")
+            self.move_group.set_joint_value_target(joint_positions)
+            self.move_group.go(wait=True)
+            self.move_group.stop()
 
     def lower_head(self):
         """
@@ -148,6 +184,12 @@ class MotionService:
         rospy.loginfo("Done.")
 
 
+    def move_to_pose (self, pose: Pose):
+        with self.move_group_lock:
+            self.group.set_pose_target(pose)
+            self.group.go(wait=True)
+
+
     def prepare_robot(self, req):
         """
         Prepares the robot for operation by moving the torso and arm to a safe position.
@@ -158,6 +200,7 @@ class MotionService:
         # Move the torso to a safe position
         joint_positions = DEFAULT_POSE_JOINT_POSITIONS[self.group_name]
         self._move_to_joint_positions(joint_positions)
+        self.move_gripper(0.04)
         
         # Lower the head
         self.lower_head()
@@ -168,59 +211,65 @@ class MotionService:
     def _cleanup_target_object(self):
         try:
             attached_objects = self.scene.get_attached_objects(["target_object"])
+
             if "target_object" in attached_objects:
                 rospy.loginfo("Detaching target_object from gripper...")
-                self.move_group.detach_object("target_object")
-                rospy.sleep(0.3)
+                try:
+                    self.move_group.detach_object("target_object")
+                except Exception as e:
+                    rospy.logerr(f"{e}") 
             
             if "target_object" in self.scene.get_known_object_names():
                 rospy.loginfo("Removing target object from world...")
                 self.scene.remove_world_object("target_object")
-                rospy.sleep(0.3)
 
             rospy.loginfo("Target object cleanup complete.")
+
         except Exception as e:
             rospy.logwarn(f"Error during target object cleanup: {e}")
 
-    def pick(self, req):
-        with self.move_group_lock:
-            rospy.loginfo("Detecting workspace...")
-            self._detect_workspace()  # Ensure workspace is detected before picking
+    def planning_scene_reset(self, req):
+        # with self.move_group_lock:
+        try:
+            try:                
+                self.move_group.detach_object("target_object")
+            except Exception as e:
+                rospy.logerr(f"{e}") 
+                pass
+            try:
+                self.scene.remove_world_object("target_object")
+            except Exception as e:
+                rospy.logerr(f"{e}") 
+                pass
+            rospy.loginfo("Removed world object...")
 
-            # Debugging
-            rospy.loginfo(f"Before cleaning up target object:")
-            rospy.loginfo(f"attached objects: {self.scene.get_attached_objects(['target_object'])}")
-            rospy.loginfo(f"Known objects: {self.scene.get_known_object_names()}")
-
-
-            # TODO: Testing whether instead of removing the world object, we can cleanup the target object
-            self._cleanup_target_object()
-            self.scene.remove_world_object("target_object") # TODO: It might be important that we do this after cleaning up the target object
-
-            rospy.sleep(0.5)
-
-
-            # Debugging
-            rospy.loginfo(f"After cleaning up target object:")
-            rospy.loginfo(f"attached objects: {self.scene.get_attached_objects(['target_object'])}")
-            rospy.loginfo(f"Known objects: {self.scene.get_known_object_names()}")
-
-            # TODO: Testing whether we can reset the moveit state
-            rospy.loginfo("Resetting MoveIt state for new planning attempt...")
             self.move_group.stop()
             self.move_group.clear_pose_targets()
             self.move_group.clear_path_constraints()
-            self.move_group.set_start_state_to_current_state()
-            rospy.sleep(0.2)
+            # self.move_group.set_start_state_to_current_state()
+            if rospy.get_param("/move_group/trajectory_execution/allowed_start_tolerance")<0.05:
+                rospy.set_param("/move_group/trajectory_execution/allowed_start_tolerance", 0.05)
 
+            return SetBoolResponse(success=True, message="Finished cleaning the planning scene") 
+        
+        except Exception as e:
+            return SetBoolResponse(success=False, message=f"Error{e}")
+
+    def pick(self, req):
+        with self.move_group_lock:
             mesh = req.object_mesh
             pose = req.object_pose
             grasps = req.grasps
             rospy.loginfo("Processing pick request...")
 
-
             try:
-
+                # try:
+                #     clear_octomap = rospy.ServiceProxy('/clear_octomap', std_srvs.srv.Empty)
+                #     clear_octomap()
+                #     rospy.loginfo("Cleared octomap")
+                #     rospy.sleep(0.2)  # Brief pause to let it clear
+                # except rospy.ServiceException as e:
+                #     rospy.logwarn(f"Could not clear octomap: {e}")                
                 # Convert grasps from request into MoveIt format
                 moveit_grasps = []
                 for grasp in grasps.poses:
@@ -232,6 +281,7 @@ class MotionService:
                     grasp_pose_stamped.header.frame_id = "base_footprint"
                     grasp_pose_stamped.header.stamp = rospy.Time.now()
                     grasp_pose_stamped.pose = grasp
+                    print(f"\n\n\n\n\ngrasp pose translation: {grasp.position.x}, {grasp.position.y}, {grasp.position.z} \n\n grasp_pose quaternion {grasp.orientation.x}, {grasp.orientation.y}, {grasp.orientation.z}, {grasp.orientation.w}, \n\n\n\n\n")
                     moveit_grasp.grasp_pose = grasp_pose_stamped
 
                     # Set pre-grasp approach
@@ -249,8 +299,9 @@ class MotionService:
                     # Set pre-grasp posture (open gripper)
                     moveit_grasp.pre_grasp_posture = self._get_gripper_posture(0.04)  # Open position
                     
+                    closed_gripper_joint = rospy.get_param("/motion/closed_gripper_joint")
                     # Set grasp posture (closed gripper)
-                    moveit_grasp.grasp_posture = self._get_gripper_posture(0.025)  # Closed position
+                    moveit_grasp.grasp_posture = self._get_gripper_posture(closed_gripper_joint)  # Closed position
 
                     # Set maximum contact force
                     moveit_grasp.max_contact_force = 0.1
@@ -268,9 +319,19 @@ class MotionService:
 
                 # Attempt the pick operation
                 success = self.move_group.pick("target_object", moveit_grasps)
+                rospy.sleep(0.2)
 
-                if success == 1:
-                    self.scene.remove_world_object("target_object")
+                if not success:
+                    try:                
+                        self.move_group.detach_object("target_object")
+                    except Exception as e:
+                        rospy.logerr(f"{e}") 
+                        
+                    try:
+                        self.scene.remove_world_object("target_object")
+                    except Exception as e:
+                        rospy.logerr(f"{e}") 
+                        
                     rospy.loginfo("Removed world object...")
 
                 return PickResponse(success=success == 1, message="Pick operation completed." if success == 1 else "Pick operation failed.")
@@ -280,8 +341,65 @@ class MotionService:
                 # Critical: clean up on failure
                 self.move_group.stop()
                 self.move_group.clear_pose_targets()
-                self.scene.remove_world_object("target_object")
+                try:
+                    self.scene.remove_world_object("target_object")
+                except Exception as e:
+                    rospy.logerr(f"{e}")
+                
             return PickResponse(success=False, message=str(e))                
+
+    def place(self, req):
+        # Create a list with one PlaceLocation
+
+        placement_pose = req.object_pose
+        self.move_group.set_support_surface_name("table")
+        place_location = moveit_msgs.msg.PlaceLocation()
+        
+        # Set the frame and pose for place location
+        place_location.place_pose.header.frame_id = "base_footprint"
+        
+        # Set orientation using RPY (0, 0, pi/2)
+
+        current_pose = self.move_group.get_current_pose().pose
+        place_location.place_pose.pose.orientation = current_pose.orientation
+
+        place_location.place_pose.pose.position = placement_pose.position
+        place_location.place_pose.pose.position.z += 0.02
+
+        # Pre-place approach - defined with respect to frame_id
+        place_location.pre_place_approach.direction.header.frame_id = "base_footprint"
+        # Direction is set as negative z axis
+        place_location.pre_place_approach.direction.vector.z = -1.0
+        place_location.pre_place_approach.min_distance = 0.095
+        place_location.pre_place_approach.desired_distance = 0.115
+        
+        # Post-place retreat - defined with respect to frame_id
+        place_location.post_place_retreat.direction.header.frame_id = "base_footprint"
+        # Direction is set as negative y axis
+        place_location.post_place_retreat.direction.vector.z = 1.0
+        place_location.post_place_retreat.min_distance = 0.1
+        place_location.post_place_retreat.desired_distance = 0.25
+        
+
+        # Set support surface and execute place
+        self.move_group.place("target_object", [place_location])
+        # Similar to the pick case - open gripper after placing
+        self.move_gripper(0.043)
+
+
+
+    def move_gripper(self, gripper_joint_position):
+        """
+        Moves the robot gripper fingers the specified joint positions.
+
+        :param joint_positions: joint position value for gripper links, assumes symetric motion.
+        """
+        # with self.move_group_lock:        
+        if 1: 
+            rospy.loginfo("Moving to joint positions...")
+            self.finger_group.set_joint_value_target([gripper_joint_position]*2)
+            self.finger_group.go(wait=True)
+            self.finger_group.stop()
 
     def detect_workspace(self, req):
         """
@@ -339,19 +457,12 @@ class MotionService:
             marker_array.markers.append(marker_x)
         
         self.marker_publisher.publish(marker_array)
-        rospy.sleep(.5)
 
     def _detect_workspace(self):
         """
         Detects the table using the table plane extractor service.
         Returns a list of detected planes.
         """
-        try:
-            self.scene.remove_world_object("table")
-            self.scene.remove_world_object("floor")
-            rospy.sleep(0.5)  
-        except Exception as e: 
-            rospy.logwarn("Table or floor not published previously")
 
         try:
             cloud = rospy.wait_for_message(self.depth_topic, PointCloud2, timeout=5)
@@ -386,7 +497,6 @@ class MotionService:
             table_pose.pose.position.z = largest_box.center.position.z
 
             self.scene.add_box("table", table_pose, (largest_box.size.y, largest_box.size.x, largest_box.size.z))
-            rospy.sleep(0.5)  
 
         # Add floor plane to the scene
         floor_pose = PoseStamped()
@@ -395,22 +505,23 @@ class MotionService:
         floor_pose.pose.position.y = 0.0
         floor_pose.pose.position.z = 0.0
         self.scene.add_box("floor", floor_pose, (10, 10, 0.01))
-        rospy.sleep(0.5)  
 
         return
 
 
     def _reset_move_group(self):
         """Reset move_group to clean state"""
-        try:
-            self.move_group.stop()
-            self.move_group.clear_pose_targets()
-            # Clear all objects from scene
-            for name in self.scene.get_known_object_names():
-                if name not in ["table", "floor"]:  # Keep workspace
-                    self.scene.remove_world_object(name)
-        except Exception as e:
-            rospy.logerr(f"Error resetting move_group: {e}")
+        # with self.move_group_lock:
+        if 1:
+            try:
+                self.move_group.stop()
+                self.move_group.clear_pose_targets()
+                # Clear all objects from scene
+                for name in self.scene.get_known_object_names():
+                    if name not in ["table", "floor"]:  # Keep workspace
+                        self.scene.remove_world_object(name)
+            except Exception as e:
+                rospy.logerr(f"Error resetting move_group: {e}")
 
     def on_ros_shutdown(self):
         rospy.loginfo("ROS shutdown called, cleaning up...")
@@ -434,6 +545,7 @@ def kill_head_manager():
     except Exception as e:
         rospy.logwarn("Could not kill pal_head_manager node: {}".format(e))
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Motion Service")
     parser.add_argument(
@@ -443,7 +555,6 @@ if __name__ == "__main__":
         help="MoveIt group name to use for motion planning.",
     )
     args = parser.parse_args()
-
     
     kill_head_manager()
     motion_service = MotionService(group_name=args.group_name)
