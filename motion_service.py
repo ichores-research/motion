@@ -15,6 +15,11 @@ import trajectory_msgs
 from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion, Vector3Stamped
 from motion_msgs.srv import (Pick, PickRequest, PickResponse, Prepare,
                              PrepareRequest, PrepareResponse, DetectWorkspace, DetectWorkspaceRequest, DetectWorkspaceResponse)
+
+from motion_msgs.srv import Pick as Place  # added for code understandability, so Place requests are not misunderstood as Pick
+from motion_msgs.srv import PickRequest as PlaceRequest # added for code understandability
+from motion_msgs.srv import PickResponse as PlaceResponse # added for code understandability
+
 from std_srvs.srv import SetBool, SetBoolRequest, SetBoolResponse, EmptyRequest, EmptyResponse, Empty
 from sensor_msgs.msg import PointCloud2
 from table_plane_extractor_msgs.srv import TablePlaneExtractor
@@ -86,8 +91,7 @@ class MotionService:
         self.move_group.set_num_planning_attempts(10)
         # self.move_group.set_start_state_to_current_state()
 
-
-        #IF OCTOMAP IS ENABLE
+        #IF OCTOMAP IS ENABLED
 
         # try:
         #     # Actual update rate control
@@ -133,10 +137,9 @@ class MotionService:
             "/motion/pick", Pick, self.pick
         )
 
-        self.pick_service = rospy.Service(
-            "/motion/place", Pick, self.place
+        self.place_service = rospy.Service(
+            "/motion/place", Place, self.place
         )
-
 
         self.detect_workspace_service = rospy.Service(
             "/motion/detect_workspace", DetectWorkspace, self.detect_workspace
@@ -183,12 +186,10 @@ class MotionService:
         self.head_cmd.publish(jt)
         rospy.loginfo("Done.")
 
-
     def move_to_pose (self, pose: Pose):
         with self.move_group_lock:
             self.group.set_pose_target(pose)
             self.group.go(wait=True)
-
 
     def prepare_robot(self, req):
         """
@@ -263,14 +264,6 @@ class MotionService:
             rospy.loginfo("Processing pick request...")
 
             try:
-                # try:
-                #     clear_octomap = rospy.ServiceProxy('/clear_octomap', std_srvs.srv.Empty)
-                #     clear_octomap()
-                #     rospy.loginfo("Cleared octomap")
-                #     rospy.sleep(0.2)  # Brief pause to let it clear
-                # except rospy.ServiceException as e:
-                #     rospy.logwarn(f"Could not clear octomap: {e}")                
-                # Convert grasps from request into MoveIt format
                 moveit_grasps = []
                 for grasp in grasps.poses:
                     moveit_grasp = moveit_msgs.msg.Grasp()
@@ -349,44 +342,49 @@ class MotionService:
             return PickResponse(success=False, message=str(e))                
 
     def place(self, req):
-        # Create a list with one PlaceLocation
+        place_success = False
+        place_message = ""
+        try: 
+            # Create a list with one PlaceLocation
+            placement_pose = req.object_pose
+            self.move_group.set_support_surface_name("table")
+            place_location = moveit_msgs.msg.PlaceLocation()
+            
+            # Set the frame and pose for place location
+            place_location.place_pose.header.frame_id = "base_footprint"
+            
+            # Set orientation using RPY (0, 0, pi/2)
 
-        placement_pose = req.object_pose
-        self.move_group.set_support_surface_name("table")
-        place_location = moveit_msgs.msg.PlaceLocation()
+            current_pose = self.move_group.get_current_pose().pose
+            place_location.place_pose.pose.orientation = current_pose.orientation
+
+            place_location.place_pose.pose.position = placement_pose.position
+            place_location.place_pose.pose.position.z += 0.02
+
+            # Pre-place approach - defined with respect to frame_id
+            place_location.pre_place_approach.direction.header.frame_id = "base_footprint"
+            # Direction is set as negative z axis
+            place_location.pre_place_approach.direction.vector.z = -1.0
+            place_location.pre_place_approach.min_distance = 0.095
+            place_location.pre_place_approach.desired_distance = 0.115
+            
+            # Post-place retreat - defined with respect to frame_id
+            place_location.post_place_retreat.direction.header.frame_id = "base_footprint"
+            # Direction is set as negative y axis
+            place_location.post_place_retreat.direction.vector.z = 1.0
+            place_location.post_place_retreat.min_distance = 0.1
+            place_location.post_place_retreat.desired_distance = 0.25
+            
+
+            # Set support surface and execute place
+            place_success = self.move_group.place("target_object", [place_location])
+            # Similar to the pick case - open gripper after placing
+            self.move_gripper(0.043)
+
+        except Exception as e:
+            place_message = f"{e}"
         
-        # Set the frame and pose for place location
-        place_location.place_pose.header.frame_id = "base_footprint"
-        
-        # Set orientation using RPY (0, 0, pi/2)
-
-        current_pose = self.move_group.get_current_pose().pose
-        place_location.place_pose.pose.orientation = current_pose.orientation
-
-        place_location.place_pose.pose.position = placement_pose.position
-        place_location.place_pose.pose.position.z += 0.02
-
-        # Pre-place approach - defined with respect to frame_id
-        place_location.pre_place_approach.direction.header.frame_id = "base_footprint"
-        # Direction is set as negative z axis
-        place_location.pre_place_approach.direction.vector.z = -1.0
-        place_location.pre_place_approach.min_distance = 0.095
-        place_location.pre_place_approach.desired_distance = 0.115
-        
-        # Post-place retreat - defined with respect to frame_id
-        place_location.post_place_retreat.direction.header.frame_id = "base_footprint"
-        # Direction is set as negative y axis
-        place_location.post_place_retreat.direction.vector.z = 1.0
-        place_location.post_place_retreat.min_distance = 0.1
-        place_location.post_place_retreat.desired_distance = 0.25
-        
-
-        # Set support surface and execute place
-        self.move_group.place("target_object", [place_location])
-        # Similar to the pick case - open gripper after placing
-        self.move_gripper(0.043)
-
-
+        return PlaceResponse(success=place_success, message=place_message)                
 
     def move_gripper(self, gripper_joint_position):
         """
@@ -434,7 +432,6 @@ class MotionService:
 
         # Add object to planning scene
         self.scene.add_object(collision_object)
-
 
     def _visualize_grasps(self, grasps):
         """Visualize grasp poses as coordinate frames in RViz"""
@@ -507,7 +504,6 @@ class MotionService:
         self.scene.add_box("floor", floor_pose, (10, 10, 0.01))
 
         return
-
 
     def _reset_move_group(self):
         """Reset move_group to clean state"""
