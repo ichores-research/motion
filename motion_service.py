@@ -24,6 +24,8 @@ from motion_msgs.srv import Pick as ToPose  # added for code understandability, 
 from motion_msgs.srv import PickRequest as ToPoseRequest # added for code understandability
 from motion_msgs.srv import PickResponse as ToPoseResponse # added for code understandability
 
+from std_srvs.srv import Empty, EmptyRequest, EmptyResponse
+
 from std_srvs.srv import SetBool, SetBoolRequest, SetBoolResponse, EmptyRequest, EmptyResponse, Empty
 from sensor_msgs.msg import PointCloud2, JointState
 from table_plane_extractor_msgs.srv import TablePlaneExtractor
@@ -160,6 +162,14 @@ class MotionService:
             "/motion/detect_workspace", DetectWorkspace, self.detect_workspace
         )
 
+        self.close_gripper_service = rospy.Service(
+            "/motion/close_gripper", Empty, self.close_gripper_callback
+        )
+
+        self.open_gripper_service = rospy.Service(
+            "/motion/open_gripper", Empty, self.open_gripper_callback
+        )
+
         self.reset_planning_scene_service = rospy.Service("/motion/reset_planning_scene", SetBool, self.planning_scene_reset)
 
         self.marker_publisher = rospy.Publisher(
@@ -215,6 +225,14 @@ class MotionService:
     def to_pose_callback(self,req):
         res, msg = self.move_to_pose(req.object_pose)
         return ToPoseResponse(success=res, message=msg)
+
+    def close_gripper_callback(self, req):
+        self.vision_close_gripper()
+        return EmptyResponse()
+    
+    def open_gripper_callback(self, req):
+        self.move_gripper(0.04)
+        return EmptyResponse()
 
     def prepare_robot(self, req):
         """
@@ -690,7 +708,6 @@ class MotionService:
             self.move_group.clear_pose_targets()
         except Exception:
             pass
-
 
 def kill_head_manager():
     """
