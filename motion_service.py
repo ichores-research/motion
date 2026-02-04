@@ -20,6 +20,10 @@ from motion_msgs.srv import Pick as Place  # added for code understandability, s
 from motion_msgs.srv import PickRequest as PlaceRequest # added for code understandability
 from motion_msgs.srv import PickResponse as PlaceResponse # added for code understandability
 
+from motion_msgs.srv import Pick as ToPose  # added for code understandability, so ToPose requests are not misunderstood as Pick
+from motion_msgs.srv import PickRequest as ToPoseRequest # added for code understandability
+from motion_msgs.srv import PickResponse as ToPoseResponse # added for code understandability
+
 from std_srvs.srv import SetBool, SetBoolRequest, SetBoolResponse, EmptyRequest, EmptyResponse, Empty
 from sensor_msgs.msg import PointCloud2, JointState
 from table_plane_extractor_msgs.srv import TablePlaneExtractor
@@ -148,6 +152,10 @@ class MotionService:
             "/motion/place", Place, self.place
         )
 
+        self.to_pose_service = rospy.Service(
+            "/motion/to_pose", ToPose, self.to_pose_callback
+        )
+
         self.detect_workspace_service = rospy.Service(
             "/motion/detect_workspace", DetectWorkspace, self.detect_workspace
         )
@@ -194,9 +202,19 @@ class MotionService:
         rospy.loginfo("Done.")
 
     def move_to_pose (self, pose: Pose):
-        with self.move_group_lock:
-            self.group.set_pose_target(pose)
-            self.group.go(wait=True)
+        try: 
+            self.move_group.set_pose_target(pose)
+            success = self.move_group.go(wait=True)
+            self.move_group.stop()
+            self.move_group.clear_pose_targets()
+            return success, f"Success! Arm moved to pose: {pose}" if success else "Failed to reach pose!"
+        except Exception as e:
+            rospy.logerr(f"{e}")
+            return False, f"{e}"
+                
+    def to_pose_callback(self,req):
+        res, msg = self.move_to_pose(req.object_pose)
+        return ToPoseResponse(success=res, message=msg)
 
     def prepare_robot(self, req):
         """
