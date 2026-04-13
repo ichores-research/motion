@@ -147,7 +147,7 @@ class MotionService:
         )
 
         self.pick_service = rospy.Service(
-            "/motion/pick", Pick, self.pick_with_vision_closure #self.pick
+            "/motion/pick", Pick, self.pick
         )
 
         self.place_service = rospy.Service(
@@ -227,7 +227,8 @@ class MotionService:
         return ToPoseResponse(success=res, message=msg)
 
     def close_gripper_callback(self, req):
-        self.vision_close_gripper()
+        closed_joint = rospy.get_param("/motion/closed_gripper_joint", 0.025)
+        self.move_gripper(closed_joint)
         return EmptyResponse()
     
     def open_gripper_callback(self, req):
@@ -335,7 +336,7 @@ class MotionService:
                     # Set pre-grasp posture (open gripper)
                     moveit_grasp.pre_grasp_posture = self._get_gripper_posture(0.04)  # Open position
                     # Set grasp posture (closed gripper)
-                    moveit_grasp.grasp_posture = self._get_gripper_posture(0.039)  # Closed position
+                    moveit_grasp.grasp_posture = self._get_gripper_posture(0.04)  # Closed position
 
                     # Set maximum contact force
                     # moveit_grasp.max_contact_force = 0.1
@@ -355,35 +356,29 @@ class MotionService:
                 success = self.move_group.pick("target_object", moveit_grasps)
                 rospy.sleep(0.2)
 
+
                 if not success:
-                    try:                
-                        self.move_group.detach_object("target_object")
-                    except Exception as e:
-                        rospy.logerr(f"{e}") 
-                        
-                    try:
-                        self.scene.remove_world_object("target_object")
-                    except Exception as e:
-                        rospy.logerr(f"{e}") 
-                        
-                    rospy.loginfo("Removed world object...")
-                
+                    # Do NOT clean up — caller decides when to reset.
+                    return PickResponse(success=False, message="Pick operation failed.")
+
+                # Only reached on success
                 self.vision_close_gripper()
+
                 joint_positions = None
                 try:
-                    msg = rospy.wait_for_message('/joint_states', JointState, timeout=5.0)
+                    msg = rospy.wait_for_message('/joint_states', JointState, timeout=10.0)
                     joint_positions = list(msg.position)
-                    joint_positions = [joint_positions[11]+0.2]+joint_positions[:7]
+                    desired_joint_positions = [joint_positions[11]+0.2]+joint_positions[:7]
 
                     rospy.loginfo(f"Got message: {msg}")
                 except rospy.ROSException:
                     rospy.logerr("Fetching joint state timeout!")
                 if joint_positions: 
-                    if joint_positions[0]<=0.34:
-                        self._move_to_joint_positions(joint_positions)
+                    if desired_joint_positions[0] <= 0.34 :
+                        self._move_to_joint_positions(desired_joint_positions)
                     else:
-                        current_pose = pose
-                        current_pose.position.z += 0.2
+                        current_pose = self.move_group.get_current_pose().pose
+                        current_pose.position.z -= 0.1
                         self.move_group.set_pose_target(current_pose)
                         self.move_group.go(wait=True)
                         self.move_group.stop()
@@ -391,16 +386,11 @@ class MotionService:
 
                 return PickResponse(success=success == 1, message="Pick operation completed." if success == 1 else "Pick operation failed.")
 
-            except Exception as e: 
+            except Exception as e:
                 rospy.logerr(f"Pick operation exception: {e}")
-                # Critical: clean up on failure
+                # Do NOT clean up the scene here — caller decides when to reset.
                 self.move_group.stop()
                 self.move_group.clear_pose_targets()
-                try:
-                    self.scene.remove_world_object("target_object")
-                except Exception as e:
-                    rospy.logerr(f"{e}")
-                
                 return PickResponse(success=False, message=str(e))
 
     def pick(self, req):
@@ -439,9 +429,9 @@ class MotionService:
                     # Set pre-grasp posture (open gripper)
                     moveit_grasp.pre_grasp_posture = self._get_gripper_posture(0.04)  # Open position
                     
-                    closed_rgipper_joint = rospy.get_param("/motion/closed_gripper_joint")
+                    closed_gripper_joint = rospy.get_param("/motion/closed_gripper_joint")
                     # Set grasp posture (closed gripper)
-                    moveit_grasp.grasp_posture = self._get_gripper_posture(closed_rgipper_joint)  # Closed position
+                    moveit_grasp.grasp_posture = self._get_gripper_posture(closed_gripper_joint)  # Closed position
 
                     # Set maximum contact force
                     # moveit_grasp.max_contact_force = 0.1
@@ -461,77 +451,109 @@ class MotionService:
                 success = self.move_group.pick("target_object", moveit_grasps)
                 rospy.sleep(0.2)
 
-                if not success:
-                    try:                
-                        self.move_group.detach_object("target_object")
-                    except Exception as e:
-                        rospy.logerr(f"{e}") 
-                        
-                    try:
-                        self.scene.remove_world_object("target_object")
-                    except Exception as e:
-                        rospy.logerr(f"{e}") 
-                        
-                    rospy.loginfo("Removed world object...")
-
+                # Do NOT clean up on failure — caller decides when to reset.
                 return PickResponse(success=success == 1, message="Pick operation completed." if success == 1 else "Pick operation failed.")
 
-            except Exception as e: 
+            except Exception as e:
                 rospy.logerr(f"Pick operation exception: {e}")
-                # Critical: clean up on failure
+                # Do NOT clean up the scene here — caller decides when to reset.
                 self.move_group.stop()
                 self.move_group.clear_pose_targets()
-                try:
-                    self.scene.remove_world_object("target_object")
-                except Exception as e:
-                    rospy.logerr(f"{e}")
-                
                 return PickResponse(success=False, message=str(e))                
 
+    # def place(self, req):
+    #     with self.move_group_lock:
+    #         place_success = False
+    #         place_message = ""
+    #         try:
+    #             rospy.loginfo("Processing place request...")
+    #             placement_pose = req.object_pose
+    #             rospy.loginfo(f"Place target: x={placement_pose.position.x:.3f}, y={placement_pose.position.y:.3f}, z={placement_pose.position.z:.3f}")
+
+    #             # Detach object so MoveIt doesn't see it colliding during planning
+    #             self._cleanup_target_object()
+
+    #             # Keep current gripper orientation, only change position
+    #             current_pose = self.move_group.get_current_pose().pose
+    #             rospy.loginfo(f"Current gripper pose: x={current_pose.position.x:.3f}, y={current_pose.position.y:.3f}, z={current_pose.position.z:.3f}")
+    #             target = copy.deepcopy(current_pose)
+    #             target.position.x = placement_pose.position.x
+    #             target.position.y = placement_pose.position.y
+    #             target.position.z = placement_pose.position.z + 0.1
+
+    #             # Move to placement XY, 10cm above target Z
+    #             rospy.loginfo(f"Moving to pre-place pose: x={target.position.x:.3f}, y={target.position.y:.3f}, z={target.position.z:.3f}")
+    #             success, msg = self.move_to_pose(target)
+    #             rospy.loginfo(f"Pre-place move result: success={success}, msg={msg}")
+    #             if not success:
+    #                 return PlaceResponse(success=False, message=f"Failed to move above place pose: {msg}")
+
+    #             # Lower 10cm to place
+    #             target.position.z -= 0.1
+    #             rospy.loginfo(f"Lowering to place pose: z={target.position.z:.3f}")
+    #             success, msg = self.move_to_pose(target)
+    #             rospy.loginfo(f"Lower move result: success={success}, msg={msg}")
+
+    #             # Open gripper to release
+    #             rospy.loginfo("Opening gripper...")
+    #             self.move_gripper(0.04)
+
+    #             place_success = success
+    #             place_message = msg if not success else "Place operation completed."
+    #             rospy.loginfo(f"Place finished: success={place_success}")
+
+    #         except Exception as e:
+    #             rospy.logerr(f"Place exception: {e}")
+    #             place_message = f"{e}"
+
+    #         return PlaceResponse(success=place_success, message=place_message)
+
     def place(self, req):
-        place_success = False
-        place_message = ""
-        try: 
-            # Create a list with one PlaceLocation
-            placement_pose = req.object_pose
-            self.move_group.set_support_surface_name("table")
-            place_location = moveit_msgs.msg.PlaceLocation()
-            
-            # Set the frame and pose for place location
-            place_location.place_pose.header.frame_id = "base_footprint"
-            
-            # Set orientation using RPY (0, 0, pi/2)
-
-            current_pose = self.move_group.get_current_pose().pose
-            place_location.place_pose.pose.orientation = current_pose.orientation
-
-            place_location.place_pose.pose.position = placement_pose.position
-            place_location.place_pose.pose.position.z += 0.02
-
-            # Pre-place approach - defined with respect to frame_id
-            place_location.pre_place_approach.direction.header.frame_id = "base_footprint"
-            # Direction is set as negative z axis
-            place_location.pre_place_approach.direction.vector.z = -1.0
-            place_location.pre_place_approach.min_distance = 0.095
-            place_location.pre_place_approach.desired_distance = 0.115
-            
-            # Post-place retreat - defined with respect to frame_id
-            place_location.post_place_retreat.direction.header.frame_id = "base_footprint"
-            # Direction is set as negative y axis
-            place_location.post_place_retreat.direction.vector.z = 1.0
-            place_location.post_place_retreat.min_distance = 0.1
-            place_location.post_place_retreat.desired_distance = 0.25
-            
-
-            # Set support surface and execute place
-            place_success = self.move_group.place("target_object", [place_location])
-            # Similar to the pick case - open gripper after placing
-            self.move_gripper(0.043)
-
-        except Exception as e:
-            place_message = f"{e}"
-        
-        return PlaceResponse(success=place_success, message=place_message)                
+        """Original MoveIt place() implementation — kept for reference."""
+        with self.move_group_lock:
+            place_success = False
+            place_message = ""
+            try:
+                # Create a list with one PlaceLocation
+                placement_pose = req.object_pose
+                self.move_group.set_support_surface_name("table")
+                place_location = moveit_msgs.msg.PlaceLocation()
+    
+                # Set the frame and pose for place location
+                place_location.place_pose.header.frame_id = "base_footprint"
+    
+                # Set orientation using RPY (0, 0, pi/2)
+    
+                current_pose = self.move_group.get_current_pose().pose
+                place_location.place_pose.pose.orientation = current_pose.orientation
+    
+                place_location.place_pose.pose.position = placement_pose.position
+                # place_location.place_pose.pose.position.z += 0.1
+    
+                # Pre-place approach - defined with respect to frame_id
+                place_location.pre_place_approach.direction.header.frame_id = "base_footprint"
+                # Direction is set as negative z axis
+                place_location.pre_place_approach.direction.vector.z = -1.0
+                place_location.pre_place_approach.min_distance = 0.095
+                place_location.pre_place_approach.desired_distance = 0.115
+    
+                # Post-place retreat - defined with respect to frame_id
+                place_location.post_place_retreat.direction.header.frame_id = "base_footprint"
+                # Direction is set as negative y axis
+                place_location.post_place_retreat.direction.vector.z = 1.0
+                place_location.post_place_retreat.min_distance = 0.1
+                place_location.post_place_retreat.desired_distance = 0.25
+                place_location.post_place_posture = self._get_gripper_posture(0.04)
+    
+                # Set support surface and execute place
+                place_success = self.move_group.place("target_object", [place_location])
+                # Similar to the pick case - open gripper after placing
+                self.move_gripper(0.043)
+    
+            except Exception as e:
+                place_message = f"{e}"
+    
+            return PlaceResponse(success=place_success, message=place_message)                
 
     def move_gripper(self, gripper_joint_position):
         """
@@ -736,6 +758,3 @@ if __name__ == "__main__":
     kill_head_manager()
     motion_service = MotionService(group_name=args.group_name)
     rospy.spin()
-
-
-
